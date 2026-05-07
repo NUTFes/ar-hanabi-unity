@@ -24,6 +24,12 @@ public class CameraBackgroundController : MonoBehaviour
             yield break;
         }
 
+        if (webcamIndex >= WebCamTexture.devices.Length)
+        {
+            Debug.LogError($"webcamIndex ({webcamIndex}) が範囲外です。利用可能なカメラ数: {WebCamTexture.devices.Length}");
+            yield break;
+        }
+
         _webCamTexture = new WebCamTexture(
             WebCamTexture.devices[webcamIndex].name,
             targetWidth, targetHeight, 30

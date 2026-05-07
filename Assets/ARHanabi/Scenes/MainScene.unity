@@ -332,6 +332,7 @@ MonoBehaviour:
   handUpThreshold: 0.3
   jumpThreshold: 0.05
   gestureCooldown: 1
+  poseHoldDuration: 0.5
 --- !u!4 &989263546
 Transform:
   m_ObjectHideFlags: 0
@@ -600,7 +601,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 16b44abdfe6acd04aa831f06b1034ef9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CameraBackgroundController
-  webcamIndex: 1
+  webcamIndex: 0
   targetWidth: 1920
   targetHeight: 1080
 --- !u!1 &1672787212
@@ -712,9 +713,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bf7c4036beb4da240b984a7975b7e4e8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PoseLandmarkDetector
-  webcamIndex: 1
-  targetWidth: 1920
-  targetHeight: 1080
+  cameraView: {fileID: 0}
   maxPeople: 5
   gestureDetector: {fileID: 989263545}
   cameraBackgroundController: {fileID: 1135560884}
