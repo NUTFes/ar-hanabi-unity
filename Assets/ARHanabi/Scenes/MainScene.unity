@@ -692,6 +692,7 @@ GameObject:
   m_Component:
   - component: {fileID: 1688655319}
   - component: {fileID: 1688655318}
+  - component: {fileID: 1688655320}
   m_Layer: 0
   m_Name: MediaPipeController
   m_TagString: Untagged
@@ -711,12 +712,13 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bf7c4036beb4da240b984a7975b7e4e8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PoseLandmarkDetector
-  cameraBackgroundController: {fileID: 1135560884}
   webcamIndex: 1
   targetWidth: 1920
   targetHeight: 1080
   maxPeople: 5
   gestureDetector: {fileID: 989263545}
+  cameraBackgroundController: {fileID: 1135560884}
+  skeletonRenderer: {fileID: 1688655320}
 --- !u!4 &1688655319
 Transform:
   m_ObjectHideFlags: 0
@@ -733,6 +735,22 @@ Transform:
   - {fileID: 989263546}
   m_Father: {fileID: 0}
   m_LocalEulerAnglesHint: {x: 0, y: 0, z: 0}
+--- !u!114 &1688655320
+MonoBehaviour:
+  m_ObjectHideFlags: 0
+  m_CorrespondingSourceObject: {fileID: 0}
+  m_PrefabInstance: {fileID: 0}
+  m_PrefabAsset: {fileID: 0}
+  m_GameObject: {fileID: 1688655317}
+  m_Enabled: 1
+  m_EditorHideFlags: 0
+  m_Script: {fileID: 11500000, guid: e3b2accbf6b767e4c9999693cb55a614, type: 3}
+  m_Name: 
+  m_EditorClassIdentifier: Assembly-CSharp::SkeletonRenderer
+  mainCamera: {fileID: 171839185}
+  drawDistance: 9
+  lineWidth: 0.1
+  lineMaterial: {fileID: 2100000, guid: 60ee01d93ba283941b21b588ac0fe744, type: 2}
 --- !u!1 &1827095284
 GameObject:
   m_ObjectHideFlags: 0

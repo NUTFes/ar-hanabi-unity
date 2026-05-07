@@ -10,24 +10,21 @@ using Mediapipe.Tasks.Core;
 public class PoseLandmarkDetector : MonoBehaviour
 {
     [Header("UI")]
-    [SerializeField] private CameraBackgroundController cameraBackgroundController;
-
-    [Header("カメラ設定")]
-    [SerializeField] private int webcamIndex = 0;
-    [SerializeField] private int targetWidth  = 640;
-    [SerializeField] private int targetHeight = 480;
+    [SerializeField] private RawImage cameraView;
 
     [Header("MediaPipe設定")]
     [SerializeField] private int maxPeople = 5;
 
     [Header("依存コンポーネント")]
     [SerializeField] private GestureDetector gestureDetector;
+    [SerializeField] private CameraBackgroundController cameraBackgroundController;
+    [SerializeField] private SkeletonRenderer skeletonRenderer;
 
     private WebCamTexture  _webCamTexture;
     private PoseLandmarker _poseLandmarker;
     private Texture2D      _inputTexture;
 
-    // コールバック結果をメインスレッドに渡すキュー
+    // スレッド間のキュー
     private readonly Queue<PoseLandmarkerResult> _resultQueue = new();
     private readonly object _queueLock = new();
 
@@ -41,7 +38,6 @@ public class PoseLandmarkDetector : MonoBehaviour
 
     private IEnumerator StartCamera()
     {
-        // CameraBackgroundControllerのカメラが起動するまで待機
         yield return new WaitUntil(() =>
             cameraBackgroundController.GetWebCamTexture() != null &&
             cameraBackgroundController.GetWebCamTexture().width > 16
@@ -53,6 +49,7 @@ public class PoseLandmarkDetector : MonoBehaviour
             _webCamTexture.width, _webCamTexture.height,
             TextureFormat.RGBA32, false
         );
+
         Debug.Log($"カメラ映像取得: {_webCamTexture.width}x{_webCamTexture.height}");
     }
 
@@ -86,19 +83,24 @@ public class PoseLandmarkDetector : MonoBehaviour
 
     private void Update()
     {
-        // カメラ映像をMediaPipeに送る
         if (_poseLandmarker != null && _webCamTexture != null
             && _webCamTexture.didUpdateThisFrame)
         {
             _inputTexture.SetPixels32(_webCamTexture.GetPixels32());
             _inputTexture.Apply();
 
-            var image = new Mediapipe.Image(_inputTexture);
-            long timestamp = (long)(Time.realtimeSinceStartup * 1000);
-            _poseLandmarker.DetectAsync(image, timestamp);
+            using (var image = new Mediapipe.Image(_inputTexture))
+            {
+                long timestamp = (long)(Time.realtimeSinceStartup * 1000);
+                _poseLandmarker.DetectAsync(image, timestamp);
+            }
         }
 
-        // メインスレッドでキューを処理
+        ProcessResultQueue();
+    }
+
+    private void ProcessResultQueue()
+    {
         PoseLandmarkerResult result = default;
         bool hasResult = false;
 
@@ -111,16 +113,16 @@ public class PoseLandmarkDetector : MonoBehaviour
             }
         }
 
-        if (hasResult && result.poseLandmarks != null)
+        if (!hasResult || result.poseLandmarks == null) return;
+
+        for (int i = 0; i < result.poseLandmarks.Count; i++)
         {
-            for (int i = 0; i < result.poseLandmarks.Count; i++)
-            {
-                gestureDetector.ProcessLandmarks(i, result.poseLandmarks[i].landmarks);
-            }
+            var landmarks = result.poseLandmarks[i].landmarks;
+            gestureDetector.ProcessLandmarks(i, landmarks);
+            skeletonRenderer.UpdateSkeleton(i, landmarks);
         }
     }
 
-    // 別スレッドから呼ばれる → キューに積むだけ
     private void OnPoseDetected(
         PoseLandmarkerResult result,
         Mediapipe.Image image,
