@@ -7,6 +7,8 @@
 [Ll]ogs/
 [Mm]emoryCaptures/
 [Uu]ser[Ss]ettings/
+_Recovery/
+Samples/
 
 # Addressables generated artifacts
 Assets/AddressableAssetsData/*/*.bin*
@@ -44,3 +46,5 @@ sysinfo.txt
 Thumbs.db
 desktop.ini
 Packages/MediaPipe/com.github.homuler.mediapipe-0.16.3.tgz
+_Recovery.meta
+Samples.meta

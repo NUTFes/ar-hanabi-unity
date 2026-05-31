@@ -329,7 +329,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: cedbc43753319664080c011abc1b21c5, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::GestureDetector
-  handUpThreshold: 0.3
+  handUpThreshold: 0.5
   jumpThreshold: 0.05
   gestureCooldown: 1
   poseHoldDuration: 0.5
@@ -601,7 +601,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 16b44abdfe6acd04aa831f06b1034ef9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CameraBackgroundController
-  webcamIndex: 0
+  webcamIndex: 1
   targetWidth: 1920
   targetHeight: 1080
 --- !u!1 &1672787212
@@ -780,7 +780,7 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::FireworkLauncher
   fireworkSmall: {fileID: 3875840469861419287, guid: a5cdcbc9fd1f63349ac8f2510ab7b07e, type: 3}
-  fireworkLarge: {fileID: 3875840469861419287, guid: 0afc55f0c55ecb6479ddd3f19dc8da97, type: 3}
+  fireworkLarge: {fileID: 3875840469861419287, guid: 1eb146e4b17097f468dc1dcb545500f4, type: 3}
   launchHeightMin: 3
   launchHeightMax: 8
   mainCamera: {fileID: 171839185}

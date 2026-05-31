@@ -10,13 +10,9 @@ public class SkeletonRenderer : MonoBehaviour
     [SerializeField] private float lineWidth = 0.02f;
     [SerializeField] private Material lineMaterial;
 
-    // MediaPipe Pose ランドマーク接続定義（33点）
+    // MediaPipe Pose ランドマーク接続定義（22点）
     private static readonly (int, int)[] _connections = new[]
     {
-        // 顔
-        (0, 1), (1, 2), (2, 3), (3, 7),
-        (0, 4), (4, 5), (5, 6), (6, 8),
-        (9, 10),
         // 上半身
         (11, 12), (11, 13), (13, 15),
         (12, 14), (14, 16),

@@ -12,16 +12,14 @@ public class GestureDetector : MonoBehaviour
 
     private class PersonState
     {
-        public float prevHipY          = -1f;
-        public float lastGestureTime   = -999f;
+        public float prevHipY             = -1f;
+        public float lastGestureTime      = -999f;
 
-        // ポーズ維持時間の計測
-        public float bothHandsUpTimer  = 0f;
-        public float oneHandUpTimer    = 0f;
+        public float bothHandsUpStartTime = -1f;
+        public float oneHandUpStartTime   = -1f;
 
-        // 発射済みフラグ（ポーズを解除するまで再発射しない）
-        public bool bothHandsFired     = false;
-        public bool oneHandFired       = false;
+        public bool bothHandsFired        = false;
+        public bool oneHandFired          = false;
     }
 
     private readonly Dictionary<int, PersonState> _personStates = new();
@@ -43,43 +41,64 @@ public class GestureDetector : MonoBehaviour
         var leftHip       = landmarks[23];
         var rightHip      = landmarks[24];
 
-        var centerX  = (leftHip.x + rightHip.x) / 2f;
-        var centerY  = (leftHip.y + rightHip.y) / 2f;
+        var centerX   = (leftHip.x + rightHip.x) / 2f;
+        var centerY   = (leftHip.y + rightHip.y) / 2f;
         var screenPos = new Vector2(centerX, centerY);
 
-        float now      = Time.time;
-        float dt       = Time.deltaTime;
-        bool  canFire  = (now - state.lastGestureTime) > gestureCooldown;
+        float now     = Time.time;
+        bool  canFire = (now - state.lastGestureTime) > gestureCooldown;
 
-        // ── ジャンプ判定（変化量ベースは維持・閾値を上げて誤検知防止）──
+        // ── 肩幅を基準にスケールを計算 ──
+        float shoulderWidth = Mathf.Abs(leftShoulder.x - rightShoulder.x);
+        // 肩幅が極端に小さい場合（検出不安定）はスキップ
+        if (shoulderWidth < 0.01f) return;
+
+        // 閾値を肩幅に対する相対値で計算
+        float dynamicHandUpThreshold = shoulderWidth * handUpThreshold;
+        float dynamicJumpThreshold   = shoulderWidth * jumpThreshold;
+
+        Debug.Log($"[Pose] P{personIndex} shoulderWidth={shoulderWidth:F3} " +
+                $"handUpThreshold={dynamicHandUpThreshold:F3} " +
+                $"jumpThreshold={dynamicJumpThreshold:F3}");
+
+        // ── ジャンプ判定 ──
         float hipY = (leftHip.y + rightHip.y) / 2f;
         if (state.prevHipY > 0f && canFire)
         {
             float deltaY = state.prevHipY - hipY;
-            if (deltaY > jumpThreshold)
+            if (deltaY > dynamicJumpThreshold)
             {
                 FireGesture(personIndex, GestureType.Jump, screenPos, state);
             }
         }
         state.prevHipY = hipY;
 
-        // ── 手上げ判定（ポーズ維持ベース）──
-        float shoulderY  = (leftShoulder.y + rightShoulder.y) / 2f;
-        bool  leftHandUp  = leftWrist.y  < (shoulderY - handUpThreshold);
-        bool  rightHandUp = rightWrist.y < (shoulderY - handUpThreshold);
+        // ── 手上げ判定 ──
+        float shoulderY   = (leftShoulder.y + rightShoulder.y) / 2f;
+        bool  leftHandUp  = leftWrist.y  < (shoulderY - dynamicHandUpThreshold);
+        bool  rightHandUp = rightWrist.y < (shoulderY - dynamicHandUpThreshold);
+        bool  bothHandsUp = leftHandUp && rightHandUp;
+        bool  oneHandUp   = leftHandUp ^ rightHandUp;
 
-        bool bothHandsUp = leftHandUp && rightHandUp;
-        bool oneHandUp   = leftHandUp ^ rightHandUp; // どちらか片方のみ
+        Debug.Log($"[Pose] P{personIndex} " +
+                $"shoulderY={shoulderY:F2} " +
+                $"leftWristY={leftWrist.y:F2} rightWristY={rightWrist.y:F2} " +
+                $"leftUp={leftHandUp} rightUp={rightHandUp} " +
+                $"canFire={canFire}");
 
-        // 両手上げ：維持時間を計測
+        // 両手上げ
         if (bothHandsUp)
         {
-            state.bothHandsUpTimer += dt;
-            state.oneHandUpTimer    = 0f; // 両手上げ中は片手タイマーリセット
-            state.oneHandFired      = false;
+            if (state.bothHandsUpStartTime < 0f)
+                state.bothHandsUpStartTime = now;
 
-            if (state.bothHandsUpTimer >= poseHoldDuration
-                && !state.bothHandsFired && canFire)
+            state.oneHandUpStartTime = -1f;
+            state.oneHandFired       = false;
+
+            float heldDuration = now - state.bothHandsUpStartTime;
+            Debug.Log($"[Pose] P{personIndex} 両手上げ中: {heldDuration:F2}秒 / {poseHoldDuration}秒");
+
+            if (heldDuration >= poseHoldDuration && !state.bothHandsFired && canFire)
             {
                 FireGesture(personIndex, GestureType.BothHandsUp, screenPos, state);
                 state.bothHandsFired = true;
@@ -87,18 +106,20 @@ public class GestureDetector : MonoBehaviour
         }
         else
         {
-            // ポーズが解除されたらリセット
-            state.bothHandsUpTimer = 0f;
-            state.bothHandsFired   = false;
+            state.bothHandsUpStartTime = -1f;
+            state.bothHandsFired       = false;
         }
 
-        // 片手上げ：維持時間を計測（両手上げでないとき）
+        // 片手上げ
         if (oneHandUp && !bothHandsUp)
         {
-            state.oneHandUpTimer += dt;
+            if (state.oneHandUpStartTime < 0f)
+                state.oneHandUpStartTime = now;
 
-            if (state.oneHandUpTimer >= poseHoldDuration
-                && !state.oneHandFired && canFire)
+            float heldDuration = now - state.oneHandUpStartTime;
+            Debug.Log($"[Pose] P{personIndex} 片手上げ中: {heldDuration:F2}秒 / {poseHoldDuration}秒");
+
+            if (heldDuration >= poseHoldDuration && !state.oneHandFired && canFire)
             {
                 FireGesture(personIndex, GestureType.OneHandUp, screenPos, state);
                 state.oneHandFired = true;
@@ -106,8 +127,8 @@ public class GestureDetector : MonoBehaviour
         }
         else
         {
-            state.oneHandUpTimer = 0f;
-            state.oneHandFired   = false;
+            state.oneHandUpStartTime = -1f;
+            state.oneHandFired       = false;
         }
     }
 
