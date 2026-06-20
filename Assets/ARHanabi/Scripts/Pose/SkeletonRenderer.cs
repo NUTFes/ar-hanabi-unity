@@ -43,7 +43,13 @@ public class SkeletonRenderer : MonoBehaviour
 
     public void UpdateSkeleton(int personIndex, List<NormalizedLandmark> landmarks)
     {
-        if (landmarks == null || landmarks.Count < 33) return;
+        // _connections が参照する最大インデックスは32 → 33点必要
+        const int requiredLandmarkCount = 33;
+        if (landmarks == null || landmarks.Count < requiredLandmarkCount)
+        {
+            // ランドマーク数が不足している場合は描画をスキップ（前回の姿勢のまま表示維持）
+            return;
+        }
 
         _lastUpdateTime[personIndex] = Time.time;
 
@@ -59,6 +65,10 @@ public class SkeletonRenderer : MonoBehaviour
         for (int i = 0; i < _connections.Length; i++)
         {
             var (a, b) = _connections[i];
+
+            // 念のための二重チェック（将来 _connections が変更されても安全に）
+            if (a >= landmarks.Count || b >= landmarks.Count) continue;
+
             var posA = LandmarkToWorld(landmarks[a]);
             var posB = LandmarkToWorld(landmarks[b]);
 

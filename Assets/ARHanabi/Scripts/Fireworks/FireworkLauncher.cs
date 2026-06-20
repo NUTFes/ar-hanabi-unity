@@ -1,5 +1,15 @@
 using UnityEngine;
 
+// ===== FireworkLauncher =====
+// PoseEventBus からジェスチャーイベントを受け取り、花火を打ち上げる
+//
+// 既存の VFX Prefab 花火（fireworkSmall / fireworkLarge）はそのまま維持。
+// isActive な画像花火がある場合は ImageFireworkEffect も同時に発射する。
+//
+// 変更点（既存コードからの差分）:
+//   ・LaunchAt() の後に TryLaunchImageFirework() を追加
+//   ・FireworkManager が null でも従来動作を損なわない
+
 public class FireworkLauncher : MonoBehaviour
 {
     [Header("花火Prefab（既存）")]
@@ -103,13 +113,10 @@ public class FireworkLauncher : MonoBehaviour
         var go  = new GameObject($"ImageFW_{entry.displayName}");
         go.transform.position = worldPos;
 
-        var ps  = go.AddComponent<ParticleSystem>();  // RequireComponent を満たす
+        go.AddComponent<ParticleSystem>(); // RequireComponent を満たす
         var fx  = go.AddComponent<ImageFireworkEffect>();
 
         // パラメータをここで上書き（Inspector 設定を反映）
-        fx.scale          = imageFireworkScale;
-        fx.explosionSpeed = imageFireworkSpeed;
-
         fx.Launch(entry.particleData);
     }
 }

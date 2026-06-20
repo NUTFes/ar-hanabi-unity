@@ -48,3 +48,10 @@ desktop.ini
 Packages/MediaPipe/com.github.homuler.mediapipe-0.16.3.tgz
 _Recovery.meta
 Samples.meta
+
+# クラッシュレポート・プロファイラ出力
+*.stackdump
+*.crash
+
+# Visual Studio Code ワークスペース設定
+*.code-workspace
