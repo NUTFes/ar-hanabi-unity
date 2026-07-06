@@ -5,10 +5,6 @@ using UnityEngine;
 //
 // 既存の VFX Prefab 花火（fireworkSmall / fireworkLarge）はそのまま維持。
 // isActive な画像花火がある場合は ImageFireworkEffect も同時に発射する。
-//
-// 変更点（既存コードからの差分）:
-//   ・LaunchAt() の後に TryLaunchImageFirework() を追加
-//   ・FireworkManager が null でも従来動作を損なわない
 
 public class FireworkLauncher : MonoBehaviour
 {
@@ -21,15 +17,29 @@ public class FireworkLauncher : MonoBehaviour
     [SerializeField] private float launchHeightMax = 8f;
     [SerializeField] private Camera mainCamera;
 
-    [Header("画像花火設定（追加）")]
+    [Header("画像花火設定")]
     [Tooltip("ON: VFX Prefab と同時に画像花火も打ち上げる")]
     [SerializeField] private bool enableImageFirework = true;
 
-    [Tooltip("画像花火の表示スケール（ImageFireworkEffect.scale に渡す）")]
+    [Tooltip("画像花火の表示スケール（ImageFireworkEffect.imageScale に渡す）")]
     [SerializeField] private float imageFireworkScale = 5f;
 
-    [Tooltip("画像花火の爆発速度")]
-    [SerializeField] private float imageFireworkSpeed = 0.3f;
+    [Header("画像花火 爆発位置")]
+    [Tooltip("OFF: VFX と同じ高さ（launchHeightMin/Max）にオフセットを加算\n" +
+             "ON : imageFireworkYFixed の固定Y座標で爆発させる")]
+    [SerializeField] private bool useFixedImageFireworkY = false;
+
+    [Tooltip("useFixedImageFireworkY が OFF のとき、VFX の Y 座標に加算するオフセット\n" +
+             "正の値 = より高く / 負の値 = より低く")]
+    [SerializeField] private float imageFireworkYOffset = 0f;
+
+    [Tooltip("useFixedImageFireworkY が ON のとき使う固定 Y 座標")]
+    [SerializeField] private float imageFireworkYFixed = 5f;
+
+    [Header("画像花火 シェーダー設定")]
+    [Tooltip("Assets/ARHanabi/Shaders/ParticleColor.shader をここにアサインする\n" +
+             "アサインしないと色が白になります")]
+    [SerializeField] private Shader particleColorShader;
 
     // ── イベント購読 ──
     private void OnEnable()
@@ -52,24 +62,21 @@ public class FireworkLauncher : MonoBehaviour
         switch (gesture)
         {
             case GestureType.BothHandsUp:
-                // 両手：豪華な花火を2発
                 LaunchAt(normalizedPos, fireworkLarge, -1.5f);
                 LaunchAt(normalizedPos, fireworkLarge,  1.5f);
                 break;
 
             case GestureType.OneHandUp:
-                // 片手：通常花火を1発
                 LaunchAt(normalizedPos, fireworkSmall, 0f);
                 break;
 
             case GestureType.Jump:
-                // ジャンプ：ランダム位置
                 LaunchAt(normalizedPos, fireworkSmall, Random.Range(-3f, 3f));
                 break;
         }
     }
 
-    // ── VFX Prefab 打ち上げ（既存ロジックそのまま）──
+    // ── VFX Prefab 打ち上げ ──
     private void LaunchAt(Vector2 normalizedPos, GameObject prefab, float xOffset)
     {
         if (prefab == null)
@@ -80,43 +87,49 @@ public class FireworkLauncher : MonoBehaviour
 
         float distanceFromCamera = 5f;
         var screenPos = new Vector3(
-            Mathf.Clamp01(normalizedPos.x)       * Screen.width,
-            Mathf.Clamp01(1f - normalizedPos.y)  * Screen.height,
+            Mathf.Clamp01(normalizedPos.x)      * Screen.width,
+            Mathf.Clamp01(1f - normalizedPos.y) * Screen.height,
             distanceFromCamera
         );
 
-        var worldPos  = mainCamera.ScreenToWorldPoint(screenPos);
-        worldPos.x   += xOffset;
-        worldPos.y    = Random.Range(launchHeightMin, launchHeightMax);
+        var worldPos = mainCamera.ScreenToWorldPoint(screenPos);
+        worldPos.x  += xOffset;
+        worldPos.y   = Random.Range(launchHeightMin, launchHeightMax);
 
         Debug.Log($"[Launcher] VFX 生成: {worldPos}");
         var fw = Instantiate(prefab, worldPos, Quaternion.identity);
         Destroy(fw, 5f);
 
-        // ── 画像花火を追加発射 ──
+        // 画像花火を追加発射
         if (enableImageFirework)
             TryLaunchImageFirework(worldPos);
     }
 
-    // ── 画像花火の発射（追加） ──
-    private void TryLaunchImageFirework(Vector3 worldPos)
+    // ── 画像花火の発射 ──
+    private void TryLaunchImageFirework(Vector3 vfxWorldPos)
     {
         var manager = FireworkManager.Instance;
-        if (manager == null) return;               // Manager 未配置なら従来動作のみ
+        if (manager == null) return;
 
         var actives = manager.GetActiveEntries();
-        if (actives.Count == 0) return;            // Active エントリなければスキップ
+        if (actives.Count == 0) return;
 
         var entry = actives[Random.Range(0, actives.Count)];
 
-        // ImageFireworkEffect を動的生成
-        var go  = new GameObject($"ImageFW_{entry.displayName}");
-        go.transform.position = worldPos;
+        // 爆発Y座標を決定
+        var imagePos = vfxWorldPos;
+        imagePos.y   = useFixedImageFireworkY
+                       ? imageFireworkYFixed
+                       : vfxWorldPos.y + imageFireworkYOffset;
 
-        go.AddComponent<ParticleSystem>(); // RequireComponent を満たす
-        var fx  = go.AddComponent<ImageFireworkEffect>();
+        var go = new GameObject($"ImageFW_{entry.displayName}");
+        go.transform.position = imagePos;
 
-        // パラメータをここで上書き（Inspector 設定を反映）
+        var fx          = go.AddComponent<ImageFireworkEffect>();
+        fx.imageScale   = imageFireworkScale;
+
+        // シェーダーを注入してから Launch
+        fx.SetShader(particleColorShader);
         fx.Launch(entry.particleData);
     }
 }
