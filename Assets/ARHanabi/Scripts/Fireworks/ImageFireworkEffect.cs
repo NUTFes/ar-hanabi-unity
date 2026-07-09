@@ -26,12 +26,16 @@ public class ImageFireworkEffect : MonoBehaviour
     public float gravityPerSec   = 2f;
     public float velocityDamping = 0.92f;
 
+    [Header("シェーダー設定")]
+    [Tooltip("Assets/ARHanabi/Shaders/ParticleColor.shader をここにアサインする")]
+    [SerializeField] private Shader particleShader;
+
     private struct Particle
     {
         public Transform tf;
-        public Vector3   startPos;   // 発射位置（origin）
-        public Vector3   targetPos;  // 絵の形の位置
-        public Vector3   vel;        // Phase3 用の速度
+        public Vector3   startPos;
+        public Vector3   targetPos;
+        public Vector3   vel;
         public Material  mat;
         public float     baseSize;
     }
@@ -61,6 +65,16 @@ public class ImageFireworkEffect : MonoBehaviour
         _quad.RecalculateBounds();
     }
 
+    /// <summary>
+    /// FireworkLauncher から動的生成時にシェーダーを注入するためのメソッド。
+    /// Launch() を呼ぶ前に呼び出すこと。
+    /// </summary>
+    public void SetShader(Shader shader)
+    {
+        if (shader != null)
+            particleShader = shader;
+    }
+
     public void Launch(ParticleData data)
     {
         if (data == null || data.particles == null || data.particles.Length == 0)
@@ -70,47 +84,55 @@ public class ImageFireworkEffect : MonoBehaviour
             return;
         }
 
+        // Inspector アサイン優先、なければ Shader.Find にフォールバック
+        var shader = particleShader != null
+                  ? particleShader
+                  : Shader.Find("Custom/ParticleColor");
+                
+        Debug.Log($"[ImageFX] Using shader: {(shader != null ? shader.name : "NULL")}");
+        if (shader == null)
+        {
+            Debug.LogError("[ImageFX] ParticleColor シェーダーが見つかりません。" +
+                           "Inspector の Particle Shader フィールドに " +
+                           "Assets/ARHanabi/Shaders/ParticleColor.shader をアサインしてください。");
+            Destroy(gameObject);
+            return;
+        }
+
         _origin    = transform.position;
         _count     = data.particles.Length;
         _particles = new Particle[_count];
 
-        var shader = Shader.Find("Custom/ParticleColor")
-                  ?? Shader.Find("Unlit/Color")
-                  ?? Shader.Find("Sprites/Default");
-
-        // 絵全体の中心を origin に合わせるためのオフセット
-        // 正規化座標 0.5,0.5 が origin になるよう計算
         for (int i = 0; i < _count; i++)
         {
             var p = data.particles[i];
 
-            // 絵の形の最終位置（originを中心にimageScaleの大きさで展開）
             float lx = (p.x - 0.5f) * imageScale;
             float ly = (0.5f - p.y) * imageScale;
             var targetPos = _origin + new Vector3(lx, ly, 0f);
 
-            // GO生成
             var go = new GameObject($"p{i}");
             go.transform.SetParent(transform);
-            go.transform.position   = _origin;  // 全粒子が origin からスタート
+            go.transform.position   = _origin;
             go.transform.localScale = Vector3.one * particleSize;
 
             go.AddComponent<MeshFilter>().sharedMesh = _quad;
-            var mr = go.AddComponent<MeshRenderer>();
+            var mr  = go.AddComponent<MeshRenderer>();
             var mat = new Material(shader);
             mat.SetColor("_Color", p.ToColor());
+            if (i < 5) Debug.Log($"[ImageFX] p{i} color: {p.ToColor()} r={p.r} g={p.g} b={p.b}");
             mr.material          = mat;
             mr.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
             mr.receiveShadows    = false;
 
             _particles[i] = new Particle
             {
-                tf         = go.transform,
-                startPos   = _origin,
-                targetPos  = targetPos,
-                vel        = Vector3.zero,
-                mat        = mat,
-                baseSize   = particleSize,
+                tf        = go.transform,
+                startPos  = _origin,
+                targetPos = targetPos,
+                vel       = Vector3.zero,
+                mat       = mat,
+                baseSize  = particleSize,
             };
         }
 
@@ -127,11 +149,9 @@ public class ImageFireworkEffect : MonoBehaviour
         float elapsed = Time.time - _startTime;
         float dt      = Time.deltaTime;
 
-        // ── Phase 1: 展開（origin → targetPos へ Lerp）──
         if (elapsed < expandTime)
         {
-            float t = elapsed / expandTime;
-            // EaseOut: 最初は速く、最後はゆっくり止まる
+            float t    = elapsed / expandTime;
             float ease = 1f - (1f - t) * (1f - t);
 
             for (int i = 0; i < _count; i++)
@@ -144,10 +164,8 @@ public class ImageFireworkEffect : MonoBehaviour
                 _particles[i].tf.localScale = Vector3.one * _particles[i].baseSize;
             }
         }
-        // ── Phase 2: 維持（targetPos で静止）──
         else if (elapsed < expandTime + holdTime)
         {
-            // Phase2 に入った瞬間だけ位置を確定させ、vel を初期化
             for (int i = 0; i < _count; i++)
             {
                 if (_particles[i].tf == null) continue;
@@ -155,7 +173,6 @@ public class ImageFireworkEffect : MonoBehaviour
                 _particles[i].vel         = Vector3.zero;
             }
         }
-        // ── Phase 3: 落下・フェード ──
         else
         {
             float fadeElapsed = elapsed - expandTime - holdTime;
@@ -165,12 +182,10 @@ public class ImageFireworkEffect : MonoBehaviour
             {
                 if (_particles[i].tf == null) continue;
 
-                // 重力加速
                 _particles[i].vel   *= velocityDamping;
                 _particles[i].vel.y -= gravityPerSec * dt;
                 _particles[i].tf.position += _particles[i].vel * dt;
 
-                // サイズでフェード
                 float s = _particles[i].baseSize * fadeRatio;
                 _particles[i].tf.localScale = Vector3.one * Mathf.Max(s, 0f);
             }

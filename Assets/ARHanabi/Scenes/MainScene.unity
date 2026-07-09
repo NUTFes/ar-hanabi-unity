@@ -201,7 +201,7 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 534605635}
   m_HandleRect: {fileID: 534605634}
   m_Direction: 0
-  m_Value: 0
+  m_Value: 1
   m_Size: 1
   m_NumberOfSteps: 0
   m_OnValueChanged:
@@ -2630,7 +2630,10 @@ MonoBehaviour:
   mainCamera: {fileID: 171839185}
   enableImageFirework: 1
   imageFireworkScale: 5
-  imageFireworkSpeed: 0.3
+  useFixedImageFireworkY: 0
+  imageFireworkYOffset: 0
+  imageFireworkYFixed: 5
+  particleColorShader: {fileID: 4800000, guid: 4ad4a566c6415a6448c1c775baeb1c51, type: 3}
 --- !u!4 &1827095286
 Transform:
   m_ObjectHideFlags: 0

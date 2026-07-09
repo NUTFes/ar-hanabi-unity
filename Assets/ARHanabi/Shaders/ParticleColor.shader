@@ -27,9 +27,9 @@ Shader "Custom/ParticleColor"
 
             #include "Packages/com.unity.render-pipelines.universal/ShaderLibrary/Core.hlsl"
 
-            CBUFFER_START(UnityPerMaterial)
-                float4 _Color;
-            CBUFFER_END
+            // CBUFFERを使わず uniform で直接宣言
+            // → 動的生成マテリアルでも SetColor() が即時反映される
+            uniform float4 _Color;
 
             struct Attributes
             {
