@@ -1,3 +1,4 @@
+using System;
 using UnityEngine;
 
 [System.Serializable]
@@ -22,26 +23,39 @@ public class ImageToParticlesSettings
     public float whiteAlpha = 0.3f;
 }
 
-public class ImageToParticles
+public class ImageToParticles : IDisposable
 {
     private readonly ImageToParticlesSettings _s;
+
+    // ── 中間バッファ ──
+    // ReadPixels 用の Texture2D は Convert() ごとに作り直すとネイティブメモリが
+    // GC 待ちで積み上がる（128×128 RGBA32 で 1回 64KB）。
+    // 解像度が変わったときだけ作り直して使い回す。
+    private Texture2D _work;
+    private int       _workSize;
+    private bool      _disposed;
 
     public ImageToParticles(ImageToParticlesSettings settings)
     {
         _s = settings;
     }
 
+    // ── 変換 ──
+
     public ParticleData Convert(Texture2D src)
     {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(ImageToParticles));
+
         int n = _s.resolution;
 
         var rt = RenderTexture.GetTemporary(n, n, 0, RenderTextureFormat.ARGB32);
         rt.filterMode = FilterMode.Bilinear;
         Graphics.Blit(src, rt);
 
+        var tex  = GetWorkTexture(n);
         var prev = RenderTexture.active;
         RenderTexture.active = rt;
-        var tex = new Texture2D(n, n, TextureFormat.RGBA32, false);
         tex.ReadPixels(new Rect(0, 0, n, n), 0, 0);
         tex.Apply();
         RenderTexture.active = prev;
@@ -67,12 +81,13 @@ public class ImageToParticles
                 // 白ピクセル
                 if (_s.includeWhite)
                 {
-                    byte a = (byte)(_s.whiteAlpha * 255);
+                    byte a = (byte)Mathf.Clamp(Mathf.RoundToInt(_s.whiteAlpha * 255f), 0, 255);
                     points.Add(new ParticlePoint(
-                        x: px / (float)(n - 1),
-                        y: py / (float)(n - 1),
-                        r: 255, g: 255, b: 255,
-                        size: 0.6f  // 白粒子は少し小さく
+                        x:    px / (float)(n - 1),
+                        y:    py / (float)(n - 1),
+                        r:    255, g: 255, b: 255,
+                        size: 0.6f,  // 白粒子は少し小さく
+                        a:    a      // whiteAlpha を実際に反映させる
                     ));
                 }
             }
@@ -87,7 +102,8 @@ public class ImageToParticles
                         r:    col.r,
                         g:    col.g,
                         b:    col.b,
-                        size: 1f
+                        size: 1f,
+                        a:    255
                     ));
                 }
             }
@@ -96,5 +112,46 @@ public class ImageToParticles
         Debug.Log($"[ImageToParticles] {n}x{n} -> {points.Count} particles " +
                   $"(includeWhite={_s.includeWhite})");
         return new ParticleData(n, n, points.ToArray());
+    }
+
+    // ── 中間バッファ管理 ──
+
+    /// <summary>n×n の作業用 Texture2D を返す。サイズが変わったときだけ作り直す</summary>
+    private Texture2D GetWorkTexture(int n)
+    {
+        if (_work != null && _workSize == n) return _work;
+
+        if (_work != null)
+        {
+            DestroyTexture(_work);
+            Debug.Log($"[ImageToParticles] Work texture resized: {_workSize} -> {n}");
+        }
+
+        _work     = new Texture2D(n, n, TextureFormat.RGBA32, false);
+        _workSize = n;
+        return _work;
+    }
+
+    /// <summary>作業用 Texture2D を解放する。再利用しないなら必ず呼ぶこと</summary>
+    public void Dispose()
+    {
+        if (_disposed) return;
+        _disposed = true;
+
+        if (_work != null)
+        {
+            DestroyTexture(_work);
+            _work     = null;
+            _workSize = 0;
+            Debug.Log("[ImageToParticles] Disposed work texture");
+        }
+    }
+
+    // Object.Destroy はエディタの非再生時に使えないので切り替える
+    private static void DestroyTexture(Texture2D tex)
+    {
+        if (tex == null) return;
+        if (Application.isPlaying) UnityEngine.Object.Destroy(tex);
+        else                       UnityEngine.Object.DestroyImmediate(tex);
     }
 }

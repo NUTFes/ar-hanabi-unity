@@ -68,21 +68,25 @@ public class ParticleData
 
 // ===== ParticlePoint =====
 // 1パーティクルの位置と色（Web側の { x, y, r, g, b, size } と対応）
+//
+// a（アルファ）はUnity側の追加フィールド。
+// ImageToParticles の whiteAlpha を反映させるために持たせている。
+// 既存の呼び出しを壊さないよう a は末尾のデフォルト引数（省略時は不透明）。
 [Serializable]
 public struct ParticlePoint
 {
     public float x;    // 0.0〜1.0 正規化座標
     public float y;    // 0.0〜1.0 正規化座標
-    public byte  r, g, b;
+    public byte  r, g, b, a;
     public float size;
 
-    public ParticlePoint(float x, float y, byte r, byte g, byte b, float size = 1f)
+    public ParticlePoint(float x, float y, byte r, byte g, byte b, float size = 1f, byte a = 255)
     {
         this.x = x; this.y = y;
-        this.r = r; this.g = g; this.b = b;
+        this.r = r; this.g = g; this.b = b; this.a = a;
         this.size = size;
     }
 
-    public Color32 ToColor32() => new Color32(r, g, b, 255);
-    public Color   ToColor()   => new Color(r / 255f, g / 255f, b / 255f);
+    public Color32 ToColor32() => new Color32(r, g, b, a);
+    public Color   ToColor()   => new Color(r / 255f, g / 255f, b / 255f, a / 255f);
 }
