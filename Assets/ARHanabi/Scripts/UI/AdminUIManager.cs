@@ -91,6 +91,7 @@ public class AdminUIManager : MonoBehaviour
     // ── 定数 ──
     private const float ButtonMinWidth = 72f;   // 従来の preferredWidth。今は「最小幅」として扱う
     private const float ButtonHeight   = 36f;
+    private const float EntryRowHeight = 64f;   // AdminUIBuilder.EntryRowHeight と一致させる
 
     // ── 内部 ──
     private FireworkManager _manager;
@@ -411,7 +412,15 @@ public class AdminUIManager : MonoBehaviour
         // ── 行ルート ──
         var rowGO  = new GameObject($"Row_{entry.displayName}");
         var rowRT  = rowGO.AddComponent<RectTransform>();
-        rowRT.sizeDelta = new Vector2(0f, 64f);
+        rowRT.sizeDelta = new Vector2(0f, EntryRowHeight);
+
+        // 親（Viewport > Content）の VerticalLayoutGroup は子の高さを
+        // LayoutElement から決めるため、sizeDelta だけでは効かない。
+        // 値は AdminUIBuilder.EntryRowHeight と揃えること。
+        var rowLe = rowGO.AddComponent<LayoutElement>();
+        rowLe.minHeight       = EntryRowHeight;
+        rowLe.preferredHeight = EntryRowHeight;
+        rowLe.flexibleHeight  = 0f;
 
         // 選択ハイライト用の背景（クリックを奪わないよう raycastTarget は切る）
         var bg = rowGO.AddComponent<Image>();
