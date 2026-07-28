@@ -1,4 +1,7 @@
-Shader "Custom/ParticleColor"
+// ParticleColor.shader と同名の "Custom/ParticleColor" を宣言していたため、
+// Shader.Find("Custom/ParticleColor") がどちらを返すか不定になっていた（色が壊れる原因）。
+// こちらは _BaseColor を使う旧版なので名前を分離する。
+Shader "Custom/ParticleUnlit"
 {
     Properties
     {

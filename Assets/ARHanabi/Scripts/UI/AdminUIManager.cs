@@ -11,7 +11,7 @@ using System.IO;
 // 画面レイアウト（Canvas 上）:
 //   ┌─────────────────────────────────────┐
 //   │  🎆 花火管理                  [閉じる] │
-//   │  [画像を追加] [全変換] [テスト打ち上げ] │
+//   │  [画像を追加] [全変換] [テスト打ち上げ] [更新] │
 //   │  ステータステキスト                    │
 //   ├─────────────────────────────────────┤
 //   │  [thumb] 名前.jpg  [変換] [有効] [削除]│  ← エントリ行
@@ -26,7 +26,6 @@ using System.IO;
 //   4. FireworkManager を同シーンに配置しておく
 //
 // 将来拡張:
-//   ・[APIから取得] ボタン → FireworkManager.FetchFromApi() を呼ぶ
 //   ・isShareable フィールドの表示
 
 public class AdminUIManager : MonoBehaviour
@@ -39,6 +38,15 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private Button    closeButton;
     [SerializeField] private Transform entryListContent;   // ScrollView > Viewport > Content
     [SerializeField] private TextMeshProUGUI statusText;
+
+    [Header("背景除去")]
+    [SerializeField] private UnityEngine.UI.Button segmentationToggleButton;
+    [SerializeField] private TMPro.TextMeshProUGUI  segmentationToggleText;
+    [SerializeField] private SelfieSegmentationController selfieSegmentation;
+
+    [Header("API")]
+    [Tooltip("DBから新規花火を差分取得する更新ボタン")]
+    [SerializeField] private Button refreshButton;
 
     [Header("Preview (optional)")]
     [SerializeField] private RawImage        previewImage;
@@ -68,6 +76,13 @@ public class AdminUIManager : MonoBehaviour
         convertAllButton  ?.onClick.AddListener(OnConvertAllClicked);
         testLaunchButton  ?.onClick.AddListener(OnTestLaunchClicked);
         closeButton       ?.onClick.AddListener(() => gameObject.SetActive(false));
+
+        // 背景除去トグル
+        segmentationToggleButton?.onClick.AddListener(OnSegmentationToggleClicked);
+        UpdateSegmentationButtonLabel();
+
+        // API 差分取得
+        refreshButton?.onClick.AddListener(OnRefreshClicked);
 
         // エントリ変更の購読
         _manager.OnEntriesChanged += RefreshList;
@@ -130,14 +145,48 @@ public class AdminUIManager : MonoBehaviour
                 SetStatus("[WARN] Convert first");
                 return;
             }
+            FireworkAudioPlayer.Instance?.PlayLaunch();
             _manager.LaunchEntry(_selectedEntry, testLaunchPosition);
             SetStatus($"[LAUNCH] {_selectedEntry.displayName}");
         }
         else
         {
+            FireworkAudioPlayer.Instance?.PlayLaunch();
             _manager.LaunchRandom(testLaunchPosition);
             SetStatus("[LAUNCH] Random");
         }
+    }
+
+    private void OnRefreshClicked()
+    {
+        if (_manager == null) return;
+        if (_manager.IsFetching)
+        {
+            SetStatus("[WARN] Already fetching");
+            return;
+        }
+
+        SetRefreshInteractable(false);
+        SetStatus("Fetching from API...");
+
+        // コルーチンは FireworkManager 側で回す。
+        // このパネルは [閉じる] で SetActive(false) されるため、自分で StartCoroutine すると
+        // 取得中に閉じられた瞬間にコルーチンが死に、IsFetching が立ちっぱなしになる。
+        _manager.StartCoroutine(_manager.FetchNewEntriesFromApi((added, err) =>
+        {
+            SetRefreshInteractable(true);
+
+            // OnEntriesChanged はこのコールバックより先に発火し RefreshList が
+            // 既に "Entries: ..." を表示済みのため、ここで上書きしても問題ない
+            if (err != null)        SetStatus($"[ERROR] {err}");
+            else if (added == 0)    SetStatus("[OK] No new fireworks");
+            else                    SetStatus($"[OK] Fetched {added} new");
+        }));
+    }
+
+    private void SetRefreshInteractable(bool value)
+    {
+        if (refreshButton != null) refreshButton.interactable = value;
     }
 
     // ── エントリ一覧の再描画 ──
@@ -188,7 +237,9 @@ public class AdminUIManager : MonoBehaviour
 
         // 名前ラベル
         var nameLbl  = MakeChild<TextMeshProUGUI>(rowGO.transform, "Name", flexible: true);
-        nameLbl.text      = entry.displayName;
+        nameLbl.text = entry.id >= 0
+            ? $"{entry.displayName}  <size=10><color=#88bbff>API</color></size>"
+            : entry.displayName;
         nameLbl.fontSize  = 14f;
         nameLbl.overflowMode = TextOverflowModes.Ellipsis;
 
@@ -306,6 +357,31 @@ public class AdminUIManager : MonoBehaviour
         System.Action onClick)
     {
         return MakeButton(parent, label, bgColor, onClick, out _);
+    }
+
+    // ── セグメンテーション ON/OFF ──
+
+    private void OnSegmentationToggleClicked()
+    {
+        if (selfieSegmentation == null) return;
+        selfieSegmentation.SetEnabled(!selfieSegmentation.IsEnabled);
+        UpdateSegmentationButtonLabel();
+        Debug.Log($"[AdminUI] Segmentation: {(selfieSegmentation.IsEnabled ? "ON" : "OFF")}");
+    }
+
+    private void UpdateSegmentationButtonLabel()
+    {
+        if (segmentationToggleText == null) return;
+
+        if (selfieSegmentation == null)
+        {
+            segmentationToggleText.text = "BG Remove [N/A]";
+            return;
+        }
+
+        segmentationToggleText.text = selfieSegmentation.IsEnabled
+            ? "BG Remove [ON]"
+            : "BG Remove [OFF]";
     }
 
     private void SetStatus(string msg)

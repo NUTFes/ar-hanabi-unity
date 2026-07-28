@@ -59,6 +59,9 @@ public class FireworkLauncher : MonoBehaviour
     {
         Debug.Log($"[Launcher] Person{personIndex} {gesture} pos={normalizedPos}");
 
+        // 打ち上げ効果音（両手ジェスチャーで2発上がっても音は1回）
+        FireworkAudioPlayer.Instance?.PlayLaunch();
+
         switch (gesture)
         {
             case GestureType.BothHandsUp:
