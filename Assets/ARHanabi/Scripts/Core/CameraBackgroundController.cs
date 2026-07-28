@@ -3,12 +3,12 @@ using UnityEngine;
 
 public class CameraBackgroundController : MonoBehaviour
 {
-    [SerializeField] private int webcamIndex = 0;
-    [SerializeField] private int targetWidth = 640;
+    [SerializeField] private int webcamIndex  = 0;
+    [SerializeField] private int targetWidth  = 640;
     [SerializeField] private int targetHeight = 480;
 
     private WebCamTexture _webCamTexture;
-    private Renderer _renderer;
+    private Renderer      _renderer;
 
     private void Start()
     {
@@ -26,7 +26,8 @@ public class CameraBackgroundController : MonoBehaviour
 
         if (webcamIndex >= WebCamTexture.devices.Length)
         {
-            Debug.LogError($"webcamIndex ({webcamIndex}) が範囲外です。利用可能なカメラ数: {WebCamTexture.devices.Length}");
+            Debug.LogError($"webcamIndex ({webcamIndex}) が範囲外です。" +
+                           $"利用可能なカメラ数: {WebCamTexture.devices.Length}");
             yield break;
         }
 
@@ -36,11 +37,16 @@ public class CameraBackgroundController : MonoBehaviour
         );
         _webCamTexture.Play();
 
-        // 映像が実際に届くまで待機
         yield return new WaitUntil(() => _webCamTexture.width > 16);
 
-        // 待機後にテクスチャを設定
+        // マテリアルの _MainTex に WebCamTexture をセット
         _renderer.material.SetTexture("_MainTex", _webCamTexture);
+
+        // BackgroundRemovalEffect にも直接セット（シェーダー差し替え後でも反映されるよう）
+        var bgEffect = GetComponent<BackgroundRemovalEffect>();
+        if (bgEffect != null)
+            bgEffect.SetWebCamTexture(_webCamTexture);
+
         Debug.Log($"カメラ映像準備完了: {_webCamTexture.width}x{_webCamTexture.height}");
     }
 
