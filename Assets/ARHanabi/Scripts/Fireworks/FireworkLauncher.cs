@@ -89,13 +89,14 @@ public class FireworkLauncher : MonoBehaviour
         }
 
         float distanceFromCamera = 5f;
-        var screenPos = new Vector3(
-            Mathf.Clamp01(normalizedPos.x)      * Screen.width,
-            Mathf.Clamp01(1f - normalizedPos.y) * Screen.height,
-            distanceFromCamera
-        );
 
-        var worldPos = mainCamera.ScreenToWorldPoint(screenPos);
+        // MediaPipe の正規化座標(原点は左上) → ワールド座標。
+        // x はそのまま、y は上下反転（1f - y）＋ Clamp01。
+        // この変換は SkeletonRenderer と共通化するため PoseCoordinateUtil に切り出してある。
+        // 花火側の挙動が正しいと実機確認済みなので、ここが基準で挙動は従来と完全に同一。
+        var worldPos = PoseCoordinateUtil.ToWorldPoint(
+            mainCamera, normalizedPos.x, normalizedPos.y, distanceFromCamera
+        );
         worldPos.x  += xOffset;
         worldPos.y   = Random.Range(launchHeightMin, launchHeightMax);
 
