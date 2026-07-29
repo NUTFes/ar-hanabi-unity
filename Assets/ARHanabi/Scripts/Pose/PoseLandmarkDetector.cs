@@ -23,6 +23,11 @@ using Mediapipe.Tasks.Core;
 //   ポーズ描画・ジェスチャー判定はどちらも「最新の姿勢」だけが意味を持つので、
 //   キューではなく「最新の1件のみ保持」に変更している（古い結果は捨てる）。
 //
+// 人物の同一性:
+//   配り先に渡す ID は検出リストの添字ではなく PoseTracker が発行する trackId を使う。
+//   添字はリスト順にすぎず、人が入れ替わると色分けやジェスチャーの保持状態が
+//   別人に飛び移る。理由と対策の詳細は PoseTracker.cs 冒頭のコメントを参照。
+//
 // 詳細ログを見たい場合は ArLog.cs 冒頭の手順で AR_VERBOSE_LOG を定義する。
 
 public class PoseLandmarkDetector : MonoBehaviour
@@ -46,10 +51,20 @@ public class PoseLandmarkDetector : MonoBehaviour
     [Tooltip("スケルトン描画を行うコンポーネント")]
     [SerializeField] private SkeletonRenderer skeletonRenderer;
 
+    [Header("人物追跡")]
+    [Tooltip("検出リストの順番ではなく、腰の位置で同一人物を追跡するための設定")]
+    [SerializeField] private PoseTrackerSettings trackerSettings = new();
+
     // ── 内部状態 ──
     private WebCamTexture  _webCamTexture;
     private PoseLandmarker _poseLandmarker;
     private Texture2D      _inputTexture;
+    private PoseTracker    _tracker;
+
+    // トラック消失時の後始末。毎フレーム EndFrame に渡すため、ラムダをフィールドに
+    // キャッシュしておく（毎回ラムダ式を書くと this をキャプチャしたクロージャが
+    // 毎フレーム確保されてしまう）
+    private System.Action<int> _onTrackLost;
 
     // 毎フレームの確保を避けるための使い回しバッファ
     private Color32[] _pixelBuffer;
@@ -60,6 +75,20 @@ public class PoseLandmarkDetector : MonoBehaviour
     private readonly object _resultLock = new();
 
     // ── ライフサイクル ──
+    // 追跡機構はカメラやモデルの準備を待つ必要がないので Awake で組み立てておく
+    // （ProcessLatestResult は初期化コルーチンの完了前にも Update から呼ばれる）
+    private void Awake()
+    {
+        _tracker = new PoseTracker(trackerSettings);
+
+        _onTrackLost = id =>
+        {
+            gestureDetector ?.RemovePerson(id);
+            skeletonRenderer?.RemovePerson(id);
+            PoseEventBus.Instance?.ReportPersonLost(id);
+        };
+    }
+
     private void Start() => StartCoroutine(Initialize());
 
     private IEnumerator Initialize()
@@ -190,13 +219,40 @@ public class PoseLandmarkDetector : MonoBehaviour
 
         ArLog.Verbose($"[Pose] 検出人数: {result.poseLandmarks.Count}");
 
+        _tracker.BeginFrame();
+
         for (int i = 0; i < result.poseLandmarks.Count; i++)
         {
             var landmarks = result.poseLandmarks[i].landmarks;
 
-            if (gestureDetector  != null) gestureDetector.ProcessLandmarks(i, landmarks);
-            if (skeletonRenderer != null) skeletonRenderer.UpdateSkeleton(i, landmarks);
+            // 腰中心（landmark 23 = 左腰 / 24 = 右腰）で人物を照合する。
+            // ランドマーク数が足りない検出はスキップする（追跡が壊れるため）
+            if (landmarks == null || landmarks.Count < 25) continue;
+
+            int trackId = _tracker.Resolve(HipCenter(landmarks));
+
+            gestureDetector ?.ProcessLandmarks(trackId, landmarks);
+            skeletonRenderer?.UpdateSkeleton(trackId, landmarks);
         }
+
+        // タイムアウトしたトラックの後始末。デリゲートはフィールドにキャッシュ済み
+        _tracker.EndFrame(_onTrackLost);
+    }
+
+    // ── 腰中心の算出 ──
+    // x も y も反転しない。WebCamTexture.GetPixels32() が下の行から並んだ配列を返すため、
+    // MediaPipe の y は既に表示映像に対して「下が 0」になっている（PoseCoordinateUtil の
+    // 冒頭コメント参照）。そもそも追跡は前フレームとの相対距離しか見ないので、
+    // 片方だけ反転させると距離計算が壊れる。
+    private static Vector2 HipCenter(List<NormalizedLandmark> landmarks)
+    {
+        var leftHip  = landmarks[23];
+        var rightHip = landmarks[24];
+
+        return new Vector2(
+            (leftHip.x + rightHip.x) * 0.5f,
+            (leftHip.y + rightHip.y) * 0.5f
+        );
     }
 
     // 別スレッドから呼ばれる。最新の結果だけを保持し、未処理の古い結果は捨てる

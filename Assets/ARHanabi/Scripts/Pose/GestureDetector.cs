@@ -47,6 +47,7 @@ public class GestureDetector : MonoBehaviour
     private readonly Dictionary<int, PersonState> _personStates = new();
 
     // ── ランドマーク処理（毎フレーム × 人数分呼ばれる）──
+    // personIndex: 何人目か（PoseTracker が振る安定した trackId が渡される想定）
     public void ProcessLandmarks(int personIndex, List<NormalizedLandmark> landmarks)
     {
         if (landmarks == null || landmarks.Count < 29) return;
@@ -157,6 +158,42 @@ public class GestureDetector : MonoBehaviour
             state.oneHandUpStartTime = -1f;
             state.oneHandFired       = false;
         }
+
+        // ── 状態の配信 ──
+        // 優先順位は Cooldown > Charging > Idle。
+        // クールダウン中は canFire が false で実際には発射できないため、
+        // 保持中の見た目を出すと「溜まっているのに撃てない」という嘘になる。
+        var feedback = new PoseFeedback { trackId = personIndex };
+
+        if (!canFire)
+        {
+            feedback.state    = PoseFeedbackState.Cooldown;
+            feedback.progress = gestureCooldown <= 0f
+                ? 0f
+                : 1f - Mathf.Clamp01((now - state.lastGestureTime) / gestureCooldown);
+        }
+        else if (state.bothHandsUpStartTime >= 0f)
+        {
+            feedback.state    = PoseFeedbackState.Charging;
+            feedback.gesture  = GestureType.BothHandsUp;
+            feedback.progress = poseHoldDuration <= 0f
+                ? 1f
+                : Mathf.Clamp01((now - state.bothHandsUpStartTime) / poseHoldDuration);
+        }
+        else if (state.oneHandUpStartTime >= 0f)
+        {
+            feedback.state    = PoseFeedbackState.Charging;
+            feedback.gesture  = GestureType.OneHandUp;
+            feedback.progress = poseHoldDuration <= 0f
+                ? 1f
+                : Mathf.Clamp01((now - state.oneHandUpStartTime) / poseHoldDuration);
+        }
+        else
+        {
+            feedback.state = PoseFeedbackState.Idle;
+        }
+
+        PoseEventBus.Instance?.ReportFeedback(feedback);
     }
 
     public void RemovePerson(int personIndex)
