@@ -1,16 +1,24 @@
 using UnityEngine;
 
 // ===== PoseCoordinateUtil =====
-// MediaPipe の正規化座標(0〜1, 原点は左上)を Unity のスクリーン座標(原点は左下)に変換する。
-// MediaPipe の y は下向きに増えるため、Unity のスクリーン座標にするには反転が必要。
+// MediaPipe の landmark 正規化座標を Unity のスクリーン座標／ワールド座標に変換する。
 //
-// 以前は SkeletonRenderer が y を反転せず、FireworkLauncher が反転していたため
-// スケルトンだけ上下逆に描画されていた（実機で確認済み）。
-// 正しいのは花火側（1f - y）なので、そちらの挙動をこのユーティリティに一本化している。
+// ── y を反転してはいけない ──
+// PoseLandmarkDetector は WebCamTexture.GetPixels32() で取得した配列をそのまま
+// MediaPipe に渡している。GetPixels32() は Texture2D の慣習どおり「下の行から」
+// 並んだ配列を返すため、MediaPipe 側はそれを「上の行から」と解釈する。
+// 結果として MediaPipe が返す y は、画面に表示されているカメラ映像に対して
+// 既に「下が 0 / 上が 1」= Unity のスクリーン座標と同じ向きになっている。
+// したがって y はそのまま Screen.height に掛けるのが正しく、1f - y にすると
+// スケルトンが上下逆に描画される（実機で確認済み）。
 //
-// x は反転しない（左右はそのまま）。
-// 範囲外の値が来ても画面内に収まるよう Clamp01 を内部で適用する
-// （FireworkLauncher の既存挙動と一致させるため）。
+// ── 「花火とスケルトンで反転が食い違っている」という指摘は誤りだった ──
+// FireworkLauncher.LaunchAt() は worldPos.y を launchHeightMin〜Max の乱数で
+// 上書きしており、変換で得た y を捨てている。使っているのは x だけなので、
+// 花火側は y の反転有無に一切影響されない。
+// 「花火は正しく見える」という観察は y の正しさを何も保証していなかった。
+//
+// x は反転しない。範囲外の値が来ても画面内に収まるよう Clamp01 を適用する。
 
 public static class PoseCoordinateUtil
 {
@@ -19,8 +27,8 @@ public static class PoseCoordinateUtil
     public static Vector3 ToScreenPoint(float normalizedX, float normalizedY, float distance)
     {
         return new Vector3(
-            Mathf.Clamp01(normalizedX)      * Screen.width,   // x はそのまま
-            Mathf.Clamp01(1f - normalizedY) * Screen.height,  // y は上下反転
+            Mathf.Clamp01(normalizedX) * Screen.width,
+            Mathf.Clamp01(normalizedY) * Screen.height,   // 反転しない（理由は上のコメント）
             distance
         );
     }

@@ -149,8 +149,10 @@ public class SkeletonRenderer : MonoBehaviour
     // ── 座標変換 ──
     private Vector3 LandmarkToWorld(NormalizedLandmark landmark)
     {
-        // MediaPipe の正規化座標(原点は左上) → Unity のスクリーン座標(原点は左下) → ワールド座標。
-        // x はそのまま、y は上下反転される（変換ロジックは PoseCoordinateUtil に一本化）。
+        // MediaPipe の正規化座標 → スクリーン座標 → ワールド座標。
+        // x も y も反転しない。WebCamTexture.GetPixels32() が下の行から並んだ配列を
+        // 返すため、MediaPipe の y は既に表示映像に対して「下が 0」になっている。
+        // 詳しい理由は PoseCoordinateUtil の冒頭コメントを参照。
         return PoseCoordinateUtil.ToWorldPoint(mainCamera, landmark.x, landmark.y, drawDistance);
     }
 
