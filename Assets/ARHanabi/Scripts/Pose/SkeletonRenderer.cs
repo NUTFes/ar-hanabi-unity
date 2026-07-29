@@ -5,6 +5,24 @@ using Mediapipe.Tasks.Components.Containers;
 // ===== SkeletonRenderer =====
 // MediaPipe Pose のランドマークを LineRenderer でスケルトン描画する。
 //
+// ── 位置合わせ（backgroundQuad を使う理由）──
+//   landmark を ScreenToWorldPoint で「画面全体」に張ると、カメラ映像とズレる。
+//   映像は CameraBackground の Quad に貼られており、その Quad が画面上のどこに
+//   どれだけの大きさで映るかは カメラのFOV・Quadまでの距離・Quadのスケール・
+//   カメラのY位置・そして画面のアスペクト比 で決まる。画面全体とは一致しない。
+//
+//   実測（Quad: pos(0,0,5) scale(42,24) / Camera: pos(0,1,-10) 垂直FOV60°）:
+//     カメラ〜Quad は 15 units、そこでの視錐台の高さは 2*15*tan30° = 17.32。
+//     Quad は 24 あるため映像は画面に収まらず中央だけが見えている。
+//     映像が占める画面範囲は 縦 -0.251〜1.135 / 横(16:9) -0.182〜1.182。
+//     一方スケルトンは 0〜1 に張られるので、約72%に縮んだうえ縦に約6%ずれる。
+//     しかも横は「高さ×アスペクト比」なので、ウィンドウの縦横比を変えると
+//     ズレ量が変わる（16:9 で映像の73%、4:3 で55%）。
+//
+//   そこで landmark を Quad の面上に直接マッピングする。こうすれば画面サイズ・
+//   アスペクト比・FOV・カメラ位置が何であっても映像と必ず一致する。
+//   backgroundQuad 未指定時は従来の画面全体マッピングにフォールバックする。
+//
 // マテリアルの扱い:
 //   LineRenderer.material に代入すると Unity はマテリアルを「インスタンス複製」する。
 //   接続線ごとに複製すると 16本 × 最大5人 = 最大80個のマテリアルが作られ、
@@ -20,7 +38,18 @@ public class SkeletonRenderer : MonoBehaviour
     [Tooltip("スクリーン座標→ワールド座標変換に使うカメラ")]
     [SerializeField] private Camera mainCamera;
 
-    [Tooltip("スケルトンを描画するカメラからの距離。CameraBackground(Z=5)より手前にする")]
+    [Header("位置合わせ")]
+    [Tooltip("カメラ映像を貼っている Quad（CameraBackground）をアサインする。\n" +
+             "アサインするとスケルトンをこの Quad の面上に描くため、画面サイズや\n" +
+             "アスペクト比・FOV が変わっても映像とずれない。\n" +
+             "空のままだと従来どおり画面全体へのマッピングになり、映像とずれる。")]
+    [SerializeField] private Transform backgroundQuad;
+
+    [Tooltip("Quad 面からカメラ側へどれだけ手前に描くか（Zファイト回避）")]
+    [SerializeField] private float quadOffset = 0.05f;
+
+    [Tooltip("【backgroundQuad が未設定のときだけ使う】\n" +
+             "スケルトンを描画するカメラからの距離")]
     [SerializeField] private float drawDistance = 9f;
 
     [Tooltip("線の太さ")]
@@ -149,11 +178,38 @@ public class SkeletonRenderer : MonoBehaviour
     // ── 座標変換 ──
     private Vector3 LandmarkToWorld(NormalizedLandmark landmark)
     {
-        // MediaPipe の正規化座標 → スクリーン座標 → ワールド座標。
         // x も y も反転しない。WebCamTexture.GetPixels32() が下の行から並んだ配列を
         // 返すため、MediaPipe の y は既に表示映像に対して「下が 0」になっている。
         // 詳しい理由は PoseCoordinateUtil の冒頭コメントを参照。
+
+        // Quad があるなら面上に直接置く（画面サイズやアスペクト比に影響されない）
+        if (backgroundQuad != null)
+            return LandmarkToQuadPoint(landmark.x, landmark.y);
+
+        // フォールバック: 画面全体へのマッピング。映像とズレるので非推奨
         return PoseCoordinateUtil.ToWorldPoint(mainCamera, landmark.x, landmark.y, drawDistance);
+    }
+
+    // ── Quad 面上へのマッピング ──
+    // Unity 内蔵 Quad メッシュはローカル 1x1・原点中心・+X が右 / +Y が上で、
+    // テクスチャの uv=(0,0) がローカル (-0.5,-0.5) に対応する。
+    // localScale がそのまま表示サイズになるので、(u-0.5, v-0.5) を TransformPoint
+    // すれば uv=(u,v) の位置にある面上の点がそのまま得られる。
+    // Transform を経由するので、Quad を動かしても拡大しても自動で追従する。
+    private Vector3 LandmarkToQuadPoint(float u, float v)
+    {
+        var point = backgroundQuad.TransformPoint(
+            new Vector3(Mathf.Clamp01(u) - 0.5f, Mathf.Clamp01(v) - 0.5f, 0f));
+
+        // Quad と同じ深さだと Z ファイトで線が消えるのでカメラ側へ少し寄せる
+        if (mainCamera != null && quadOffset != 0f)
+        {
+            var toCamera = mainCamera.transform.position - point;
+            if (toCamera.sqrMagnitude > 0.0001f)
+                point += toCamera.normalized * quadOffset;
+        }
+
+        return point;
     }
 
     // ── LineRenderer 生成 ──

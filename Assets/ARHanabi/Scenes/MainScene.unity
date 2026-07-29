@@ -3062,6 +3062,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SkeletonRenderer
   mainCamera: {fileID: 171839185}
+  backgroundQuad: {fileID: 1135560883}
+  quadOffset: 0.05
   drawDistance: 9
   lineWidth: 0.1
   lineMaterial: {fileID: 2100000, guid: 60ee01d93ba283941b21b588ac0fe744, type: 2}
