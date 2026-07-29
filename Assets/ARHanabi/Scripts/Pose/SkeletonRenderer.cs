@@ -77,7 +77,23 @@ public class SkeletonRenderer : MonoBehaviour
              "Custom/ParticleUnlit なら色もアルファも頂点カラーで制御できる")]
     [SerializeField] private Material lineMaterial;
 
+    [Header("感知フラッシュ")]
+    [Tooltip("ジェスチャーを感知した瞬間に光らせる色")]
+    [SerializeField] private Color flashColor              = new Color(1f, 0.95f, 0.6f, 1f);
+
+    [Tooltip("フラッシュの長さ（秒）。0 にすると無効")]
+    [SerializeField] private float flashDuration           = 0.35f;
+
+    [Tooltip("フラッシュのピーク時の線の太さ倍率")]
+    [SerializeField] private float flashWidthMultiplier    = 3.0f;
+
     [Header("状態フィードバック")]
+    [Tooltip("ポーズ保持中のチャージ表示を出すか")]
+    [SerializeField] private bool  showChargeFeedback      = true;
+
+    [Tooltip("クールダウン中の暗転表示を出すか")]
+    [SerializeField] private bool  showCooldownFeedback    = false;
+
     [Tooltip("チャージ完了時に向かう色")]
     [SerializeField] private Color chargeColor             = Color.white;
 
@@ -125,6 +141,21 @@ public class SkeletonRenderer : MonoBehaviour
     // 辞書への代入でアロケーションは起きない）
     private readonly Dictionary<int, PoseFeedback> _feedback = new();
 
+    // 感知フラッシュの終了時刻（trackId → Time.time ベース）
+    private readonly Dictionary<int, float> _flashUntil = new();
+
+    // 直前に LineRenderer へ適用した色と太さ。
+    // startColor / startWidth への代入は LineRenderer をダーティにするため、
+    // 値が変わっていないフレームは代入自体をスキップする
+    // （16本 × 最大5人 = 80本 × 4プロパティ = 320回/フレームの無駄を消す）
+    private struct AppliedStyle
+    {
+        public Color color;
+        public float width;
+        public bool  valid;
+    }
+    private readonly Dictionary<int, AppliedStyle> _appliedStyle = new();
+
     // タイムアウト判定でループ中に辞書を触らないための一時リスト（毎フレーム確保しない）
     private readonly List<int> _timedOutBuffer = new();
 
@@ -150,9 +181,10 @@ public class SkeletonRenderer : MonoBehaviour
         var bus = PoseEventBus.Instance;
         if (bus == null) return;   // Start でもう一度試す
 
-        bus.OnPoseFeedback += OnPoseFeedback;
-        bus.OnPersonLost   += OnPersonLost;
-        _subscribed         = true;
+        bus.OnPoseFeedback    += OnPoseFeedback;
+        bus.OnPersonLost      += OnPersonLost;
+        bus.OnGestureDetected += OnGestureDetected;
+        _subscribed            = true;
     }
 
     private void OnDisable()
@@ -162,10 +194,19 @@ public class SkeletonRenderer : MonoBehaviour
         var bus = PoseEventBus.Instance;
         if (bus != null)
         {
-            bus.OnPoseFeedback -= OnPoseFeedback;
-            bus.OnPersonLost   -= OnPersonLost;
+            bus.OnPoseFeedback    -= OnPoseFeedback;
+            bus.OnPersonLost      -= OnPersonLost;
+            bus.OnGestureDetected -= OnGestureDetected;
         }
         _subscribed = false;
+    }
+
+    // ジェスチャーが感知された瞬間。フラッシュの終了時刻を記録するだけ。
+    // gestureCooldown が効くので低頻度（1人あたり最短2秒に1回）
+    private void OnGestureDetected(int trackId, GestureType gesture, Vector2 normalizedPos)
+    {
+        if (flashDuration <= 0f) return;
+        _flashUntil[trackId] = Time.time + flashDuration;
     }
 
     // 毎フレーム×人数分呼ばれる。最新値の保存だけに留めること
@@ -211,6 +252,8 @@ public class SkeletonRenderer : MonoBehaviour
         _lastUpdateTime.Clear();
         _personVisible.Clear();
         _feedback.Clear();
+        _flashUntil.Clear();
+        _appliedStyle.Clear();
     }
 
     // ── Public API ──
@@ -240,8 +283,22 @@ public class SkeletonRenderer : MonoBehaviour
 
         SetPersonVisible(personIndex, true);
 
-        // 状態から色と太さを1回だけ求めて、位置更新と同じループで適用する
+        // 状態から色と太さを1回だけ求める
         ResolveFeedbackStyle(personIndex, out var color, out var width);
+
+        // 前フレームと同じ見た目なら色・太さの代入を省く。
+        // startColor / startWidth の setter は LineRenderer をダーティにするので、
+        // Idle で止まっている間ずっと 320回/フレームの無駄な代入が走っていた
+        _appliedStyle.TryGetValue(personIndex, out var applied);
+        bool styleChanged = !applied.valid
+                         || applied.width   != width
+                         || applied.color.r != color.r
+                         || applied.color.g != color.g
+                         || applied.color.b != color.b
+                         || applied.color.a != color.a;
+
+        if (styleChanged)
+            _appliedStyle[personIndex] = new AppliedStyle { color = color, width = width, valid = true };
 
         for (int i = 0; i < _connections.Length; i++)
         {
@@ -253,6 +310,8 @@ public class SkeletonRenderer : MonoBehaviour
             var lr = lines[i];
             lr.SetPosition(0, LandmarkToWorld(landmarks[a]));
             lr.SetPosition(1, LandmarkToWorld(landmarks[b]));
+
+            if (!styleChanged) continue;
 
             lr.startColor = color;
             lr.endColor   = color;
@@ -279,9 +338,14 @@ public class SkeletonRenderer : MonoBehaviour
         _lastUpdateTime.Remove(trackId);
         _personVisible.Remove(trackId);
         _feedback.Remove(trackId);
+        _flashUntil.Remove(trackId);
+        _appliedStyle.Remove(trackId);
     }
 
     // ── 状態 → 色・太さ ──
+    // 優先順位は フラッシュ > Cooldown > Charging > Idle。
+    // フラッシュは「ジェスチャーを感知した」ことを伝える主役なので、
+    // 発火直後に始まるクールダウン表示に潰されないよう最優先で判定する。
     // _feedback にエントリが無い trackId は Idle 扱い。
     // Color / float はどちらも構造体なのでこのメソッドはアロケーションしない。
     private void ResolveFeedbackStyle(int trackId, out Color color, out float width)
@@ -291,12 +355,30 @@ public class SkeletonRenderer : MonoBehaviour
         color = baseColor;
         width = lineWidth;
 
+        // ── 感知フラッシュ ──
+        if (_flashUntil.TryGetValue(trackId, out float flashUntil))
+        {
+            float remaining = flashUntil - Time.time;
+            if (remaining > 0f && flashDuration > 0f)
+            {
+                // 立ち上がりは瞬間、消え際はゆっくり（t を2乗して減衰を後ろに寄せる）
+                float t = Mathf.Clamp01(remaining / flashDuration);
+                float eased = t * t;
+
+                color = Color.Lerp(baseColor, flashColor, eased);
+                width = Mathf.Lerp(lineWidth, lineWidth * flashWidthMultiplier, eased);
+                return;   // フラッシュ中は他の状態を上書きする
+            }
+        }
+
         if (!_feedback.TryGetValue(trackId, out var feedback)) return;
 
         switch (feedback.state)
         {
             case PoseFeedbackState.Charging:
             {
+                if (!showChargeFeedback) break;
+
                 // progress: 0→1。1 に近づくほど chargeColor へ寄り、線も太くなる
                 float t = Mathf.Clamp01(feedback.progress);
                 color = Color.Lerp(baseColor, chargeColor, t);
@@ -305,6 +387,8 @@ public class SkeletonRenderer : MonoBehaviour
             }
 
             case PoseFeedbackState.Cooldown:
+                if (!showCooldownFeedback) break;
+
                 // 暗く半透明にして「今は撃てない」ことを示す
                 color = new Color(baseColor.r * cooldownColorMultiplier,
                                   baseColor.g * cooldownColorMultiplier,
