@@ -11,12 +11,23 @@ using UnityEngine;
 // 1台しか無い環境では targetDisplay: 1 の描画先が存在せず、
 // 花火が一切映らないまま無言で終わる。その場合は targetDisplay を 0 に
 // フォールバックさせて、少なくとも花火が見える状態にする。
+//
+// ── エディタでフォールバックしてはいけない理由 ──
+// Display.displays.Length は Unity Editor では実際のモニタ数に関係なく
+// 常に 1 を返す（マルチディスプレイは standalone プレイヤーのみで機能する）。
+// そのためエディタでこのフォールバックを走らせると、毎回 Main Camera の
+// targetDisplay が 1 → 0 に書き換えられ、Game view の Display 2 に向く
+// カメラが無くなって "No cameras rendering" になってしまう。
+// エディタでは Display 2 は targetDisplay の指定だけで正しく描画されるので、
+// フォールバックはプレイヤービルド時のみ行う。
 
 public class DisplayActivator : MonoBehaviour
 {
     // ── Inspector ──
     [Header("フォールバック")]
-    [Tooltip("ディスプレイが1台しかない場合、targetDisplay >= 1 のカメラを Display 0 に切り替える")]
+    [Tooltip("ディスプレイが1台しかない場合、targetDisplay >= 1 のカメラを Display 0 に切り替える\n" +
+             "※ エディタでは Display.displays.Length が常に 1 になるため無効（Game view の\n" +
+             "　 Display 2 が映らなくなるのを避けるため）")]
     [SerializeField] private bool fallbackToPrimaryDisplay = true;
 
     // ── ライフサイクル ──
@@ -31,7 +42,16 @@ public class DisplayActivator : MonoBehaviour
             return;
         }
 
-        // ── ここから1台構成 ──
+        // エディタでは displayCount が常に 1 なので、ここに来ても実機の台数は分からない。
+        // Game view は targetDisplay だけで Display 2 を描けるため何もしない。
+        if (Application.isEditor)
+        {
+            Debug.Log("[Display] Editor では Display.displays.Length が常に 1 のため " +
+                      "フォールバックしない（Game view の Display 切り替えで確認できる）");
+            return;
+        }
+
+        // ── ここから1台構成（プレイヤービルドのみ）──
         if (!fallbackToPrimaryDisplay)
         {
             Debug.LogWarning("[Display] Only 1 display detected and fallbackToPrimaryDisplay is OFF. " +

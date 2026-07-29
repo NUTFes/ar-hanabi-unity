@@ -311,71 +311,101 @@ public class FireworkManager : MonoBehaviour
 
         IsFetching = true;
 
-        // ── 1. 一覧を差分取得 ──
-        List<FireworkDto> dtos       = null;
-        string            fetchError = null;
+        int    added     = 0;
+        int    totalDtos = 0;
+        string error     = null;
+        bool   completed = false;
 
-        yield return StartCoroutine(apiClient.FetchFireworks(
-            MaxKnownApiId,
-            result => dtos       = result,
-            err    => fetchError = err));
-
-        if (fetchError != null)
+        // try/finally で囲むのは必須。
+        // ここで例外が出たり、コルーチンが外部から停止されたりすると、
+        // IsFetching と _suppressEvents が true のまま残る。そうなると
+        //   ・IsFetching   → 以後の [更新] が「already fetching」で永久に弾かれる
+        //   ・_suppressEvents → RaiseEntriesChanged() が無効化され一覧が二度と更新されない
+        // となり、「APIの更新がされなくなった」状態に陥る。
+        // （C# のイテレータでは try-catch の中に yield return は書けないが、
+        //   try-finally なら書ける。だから catch ではなく completed フラグで判定する）
+        try
         {
-            IsFetching = false;
-            Debug.LogWarning($"[FWManager] Fetch failed: {fetchError}");
-            onDone?.Invoke(0, fetchError);
-            yield break;
-        }
+            // ── 1. 一覧を差分取得 ──
+            List<FireworkDto> dtos       = null;
+            string            fetchError = null;
 
-        if (dtos == null || dtos.Count == 0)
-        {
-            IsFetching = false;
-            Debug.Log($"[FWManager] No new entries (sinceId={MaxKnownApiId})");
-            onDone?.Invoke(0, null);
-            yield break;
-        }
+            yield return StartCoroutine(apiClient.FetchFireworks(
+                MaxKnownApiId,
+                result => dtos       = result,
+                err    => fetchError = err));
 
-        // ── 2. 1件ずつ 画像DL → 変換 → 有効化 ──
-        // ConvertEntry / SetActive がそれぞれ発火するとUIが 2N 回再描画されるため、
-        // ループ中は抑制して最後に1回だけ通知する
-        _suppressEvents = true;
-        int added = 0;
-
-        foreach (var dto in dtos)
-        {
-            Texture2D tex     = null;
-            string    dlError = null;
-
-            yield return StartCoroutine(apiClient.DownloadTexture(
-                dto.imageUrl,
-                t   => tex     = t,
-                err => dlError = err));
-
-            if (tex == null)
+            if (fetchError != null)
             {
-                // 1件の失敗で全体を止めない。_knownApiIds に入れないので次回リトライされる
-                Debug.LogWarning($"[FWManager] Skip id={dto.id}: image download failed ({dlError})");
-                continue;
+                error = fetchError;
+                Debug.LogWarning($"[FWManager] Fetch failed: {fetchError}");
+            }
+            else if (dtos == null || dtos.Count == 0)
+            {
+                Debug.Log($"[FWManager] No new entries (sinceId={MaxKnownApiId})");
+            }
+            else
+            {
+                totalDtos = dtos.Count;
+
+                // ── 2. 1件ずつ 画像DL → 変換 → 有効化 ──
+                // ConvertEntry / SetActive がそれぞれ発火するとUIが 2N 回再描画されるため、
+                // ループ中は抑制して最後に1回だけ通知する
+                _suppressEvents = true;
+
+                foreach (var dto in dtos)
+                {
+                    Texture2D tex     = null;
+                    string    dlError = null;
+
+                    yield return StartCoroutine(apiClient.DownloadTexture(
+                        dto.imageUrl,
+                        t   => tex     = t,
+                        err => dlError = err));
+
+                    if (tex == null)
+                    {
+                        // 1件の失敗で全体を止めない。_knownApiIds に入れないので次回リトライされる
+                        Debug.LogWarning($"[FWManager] Skip id={dto.id}: image download failed ({dlError})");
+                        continue;
+                    }
+
+                    var entry = new FireworkEntry((int)dto.id, $"#{dto.id}", dto.imageUrl, dto.isShareable);
+                    entry.localTexture = tex;
+                    entry.createdAt    = dto.createdAt;
+                    _entries.Add(entry);
+                    RegisterApiId(dto.id);
+
+                    ConvertEntry(entry);
+                    SetActive(entry, true);
+                    added++;
+                }
             }
 
-            var entry = new FireworkEntry((int)dto.id, $"#{dto.id}", dto.imageUrl, dto.isShareable);
-            entry.localTexture = tex;
-            entry.createdAt    = dto.createdAt;
-            _entries.Add(entry);
-            RegisterApiId(dto.id);
-
-            ConvertEntry(entry);
-            SetActive(entry, true);
-            added++;
+            completed = true;
+        }
+        finally
+        {
+            // 例外・コルーチン停止・正常終了のいずれでも必ず通る
+            _suppressEvents = false;
+            IsFetching      = false;
         }
 
-        // ── 3. 後片付け（抑制解除して1回だけ通知）──
-        _suppressEvents = false;
-        IsFetching      = false;
+        // ── 3. 後片付け ──
+        if (!completed)
+        {
+            // finally は通ったが try を抜けきっていない = 例外か外部停止。
+            // ここで onDone を呼ばないと呼び出し側のボタンが無効のまま固まる。
+            Debug.LogError("[FWManager] 取得処理が異常終了しました。上の例外ログを確認してください");
+            onDone?.Invoke(added, "取得処理が異常終了しました（Console を確認してください）");
+            yield break;
+        }
+
         RaiseEntriesChanged();
 
-        Debug.Log($"[FWManager] Fetched {added}/{dtos.Count} entries (maxKnownApiId={MaxKnownApiId})");
-        onDone?.Invoke(added, null);
+        if (error == null)
+            Debug.Log($"[FWManager] Fetched {added}/{totalDtos} entries (maxKnownApiId={MaxKnownApiId})");
+
+        onDone?.Invoke(added, error);
     }
 }

@@ -166,6 +166,8 @@ public class AdminUIManager : MonoBehaviour
 
     private void Update()
     {
+        HealStuckButtons();
+
         if (!toggleWithF1) return;
 
         // 新 Input System 専用プロジェクト（activeInputHandler: 1）なので
@@ -175,6 +177,23 @@ public class AdminUIManager : MonoBehaviour
 
         if (keyboard.f1Key.wasPressedThisFrame)
             ToggleVisible();
+    }
+
+    // 処理中はボタンを無効化しているが、コールバックが届かないまま
+    // コルーチンが死ぬとボタンが無効のまま固まって二度と押せなくなる。
+    // 実際の進行状態（IsFetching）を正として毎フレーム突き合わせて復帰させる。
+    private void HealStuckButtons()
+    {
+        if (_manager == null) return;
+
+        if (refreshButton != null && !refreshButton.interactable && !_manager.IsFetching)
+        {
+            refreshButton.interactable = true;
+            Debug.LogWarning("[AdminUI] 更新ボタンが無効のまま残っていたので復帰させました");
+        }
+
+        if (convertAllButton != null && !convertAllButton.interactable && !_isConvertingAll)
+            convertAllButton.interactable = true;
     }
 
     private void OnDestroy()
