@@ -201,7 +201,7 @@ MonoBehaviour:
   m_TargetGraphic: {fileID: 534605635}
   m_HandleRect: {fileID: 534605634}
   m_Direction: 0
-  m_Value: 0
+  m_Value: 1
   m_Size: 1
   m_NumberOfSteps: 0
   m_OnValueChanged:
@@ -2386,9 +2386,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 16b44abdfe6acd04aa831f06b1034ef9, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::CameraBackgroundController
-  webcamIndex: 2
-  targetWidth: 1920
-  targetHeight: 1080
+  webcamIndex: 1
+  targetWidth: 1280
+  targetHeight: 720
+  autoRestartOnStall: 1
+  restartRetryInterval: 1
 --- !u!114 &1135560885
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -2707,6 +2709,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f413ac900de4abe439862ea6b76b8f32, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DisplayActivator
+  fallbackToPrimaryDisplay: 1
 --- !u!4 &1446044011
 Transform:
   m_ObjectHideFlags: 0
@@ -3028,11 +3031,15 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: bf7c4036beb4da240b984a7975b7e4e8, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::PoseLandmarkDetector
-  cameraView: {fileID: 0}
   maxPeople: 5
   gestureDetector: {fileID: 989263545}
   cameraBackgroundController: {fileID: 1135560884}
   skeletonRenderer: {fileID: 1688655320}
+  trackerSettings:
+    maxMatchDistance: 0.15
+    trackTimeout: 0.5
+  detectionHz: 30
+  frameStallWarnSeconds: 1
 --- !u!4 &1688655319
 Transform:
   m_ObjectHideFlags: 0
@@ -3067,6 +3074,15 @@ MonoBehaviour:
   drawDistance: 9
   lineWidth: 0.1
   lineMaterial: {fileID: 2100000, guid: 60ee01d93ba283941b21b588ac0fe744, type: 2}
+  flashColor: {r: 1, g: 0.95, b: 0.6, a: 1}
+  flashDuration: 0.35
+  flashWidthMultiplier: 3
+  showChargeFeedback: 1
+  showCooldownFeedback: 0
+  chargeColor: {r: 1, g: 1, b: 1, a: 1}
+  chargeWidthMultiplier: 2
+  cooldownColorMultiplier: 0.35
+  cooldownAlpha: 0.4
 --- !u!114 &1688655321
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -3086,6 +3102,7 @@ MonoBehaviour:
   backendType: 256
   modelInputWidth: 256
   modelInputHeight: 144
+  inferenceHz: 20
 --- !u!1 &1803081966
 GameObject:
   m_ObjectHideFlags: 0
@@ -3157,6 +3174,14 @@ MonoBehaviour:
   previewImage: {fileID: 0}
   detailText: {fileID: 0}
   testLaunchPosition: {x: 0, y: 5, z: 0}
+  visibleOnStart: 1
+  toggleWithF1: 1
+  rowNormalColor: {r: 1, g: 1, b: 1, a: 0.04}
+  rowSelectedColor: {r: 0.35, g: 0.55, b: 0.95, a: 0.35}
+  deleteConfirmSeconds: 3
+  deleteConfirmColor: {r: 0.95, g: 0.6, b: 0.1, a: 1}
+  buttonFontSizeMin: 8
+  buttonFontSizeMax: 12
 --- !u!114 &1803081969
 MonoBehaviour:
   m_ObjectHideFlags: 0
@@ -3614,6 +3639,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: f413ac900de4abe439862ea6b76b8f32, type: 3}
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::DisplayActivator
+  fallbackToPrimaryDisplay: 1
 --- !u!1 &2056287896
 GameObject:
   m_ObjectHideFlags: 0
