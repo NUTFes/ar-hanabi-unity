@@ -62,6 +62,10 @@ public class PoseLandmarkDetector : MonoBehaviour
              "重い場合は下げると推論回数がそのまま減る（追従は鈍くなる）")]
     [SerializeField] private float detectionHz = 30f;
 
+    [Tooltip("カメラのフレームがこの秒数以上更新されなかったら警告を出す。\n" +
+             "isPlaying が true のままフレームだけ止まるケースの検知用")]
+    [SerializeField] private float frameStallWarnSeconds = 1.0f;
+
     // ── 内部状態 ──
     private WebCamTexture  _webCamTexture;
     private PoseLandmarker _poseLandmarker;
@@ -78,6 +82,12 @@ public class PoseLandmarkDetector : MonoBehaviour
 
     // 最後に推論を投げた時刻（detectionHz による間引き用）
     private float _lastDetectionTime = -999f;
+
+    // フレーム停止の検知用（DetectFrozenFrame 参照）
+    private uint  _lastFrameHash;
+    private float _lastFrameChange;
+    private float _frozenSince;
+    private bool  _frozenWarned;
 
     // ── Profiler マーカー ──
     // Profiler の CPU Usage > Hierarchy で "ARHanabi." を検索すると
@@ -246,6 +256,8 @@ public class PoseLandmarkDetector : MonoBehaviour
             _webCamTexture.GetPixels32(_pixelBuffer);
         }
 
+        DetectFrozenFrame();
+
         // CPU コピー ＋ CPU→GPU アップロード
         using (_markerUpload.Auto())
         {
@@ -263,6 +275,55 @@ public class PoseLandmarkDetector : MonoBehaviour
                 _poseLandmarker.DetectAsync(image, timestamp);
             }
         }
+    }
+
+    // ── フレーム停止の検知 ──
+    // isPlaying が true のままフレームだけ来なくなるケースを捕まえる。
+    // 実カメラの映像はセンサーノイズで必ず微妙に変化するため、
+    // サンプルした画素が完全に同一なら「同じフレームを見続けている」と判断できる。
+    // _pixelBuffer は読み戻し済みなので追加のコストはほぼゼロ。
+    private void DetectFrozenFrame()
+    {
+        if (_pixelBuffer == null || _pixelBuffer.Length == 0) return;
+
+        // 全画素を見る必要はない。等間隔に SampleCount 点だけ拾って畳み込む
+        const int SampleCount = 64;
+        int stride = Mathf.Max(1, _pixelBuffer.Length / SampleCount);
+
+        uint hash = 2166136261u;   // FNV-1a
+        for (int i = 0; i < _pixelBuffer.Length; i += stride)
+        {
+            var c = _pixelBuffer[i];
+            hash = (hash ^ c.r) * 16777619u;
+            hash = (hash ^ c.g) * 16777619u;
+            hash = (hash ^ c.b) * 16777619u;
+        }
+
+        float now = Time.time;
+
+        if (hash != _lastFrameHash)
+        {
+            _lastFrameHash   = hash;
+            _lastFrameChange = now;
+
+            if (_frozenWarned)
+            {
+                _frozenWarned = false;
+                Debug.Log($"[Pose] カメラのフレーム更新が再開しました（停止していた時間: " +
+                          $"{now - _frozenSince:F1}秒）");
+            }
+            return;
+        }
+
+        // ハッシュが変わらないまま経過している
+        if (_frozenWarned || now - _lastFrameChange < frameStallWarnSeconds) return;
+
+        _frozenWarned = true;
+        _frozenSince  = _lastFrameChange;
+        Debug.LogWarning($"[Pose] カメラのフレームが {frameStallWarnSeconds}秒 以上更新されていません" +
+                         $"（isPlaying={_webCamTexture.isPlaying}）。" +
+                         "isPlaying が true のままなら、Unity 側は配信中だと思っているのに" +
+                         "デバイスがフレームを送っていない状態です");
     }
 
     // ── 推論結果の反映 ──
