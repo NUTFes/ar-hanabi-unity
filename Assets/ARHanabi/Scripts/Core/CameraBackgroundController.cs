@@ -7,8 +7,20 @@ public class CameraBackgroundController : MonoBehaviour
     [SerializeField] private int targetWidth  = 640;
     [SerializeField] private int targetHeight = 480;
 
+    [Header("停止時の復帰")]
+    [Tooltip("カメラの配信が止まった（isPlaying が false になった）ときに自動で再開を試みる。\n" +
+             "展示中に止まったまま放置されるのを防ぐための保険")]
+    [SerializeField] private bool  autoRestartOnStall  = true;
+
+    [Tooltip("再開を試みる間隔（秒）。連続で Play() を叩かないための下限")]
+    [SerializeField] private float restartRetryInterval = 1.0f;
+
     private WebCamTexture _webCamTexture;
     private Renderer      _renderer;
+
+    // 停止検知の状態。ログを毎フレーム出さないための記録
+    private bool  _wasPlaying;
+    private float _lastRestartAttempt = -999f;
 
     private void Start()
     {
@@ -52,8 +64,44 @@ public class CameraBackgroundController : MonoBehaviour
 
     public WebCamTexture GetWebCamTexture() => _webCamTexture;
 
+    // ── 停止の検知と復帰 ──
+    // 「時々カメラが停止する」対策。isPlaying が落ちたことを検知して警告を出し、
+    // 必要なら Play() で再開を試みる。
+    //
+    // 注意: このコンポーネントが WebCamTexture の唯一の所有者。
+    // 借用側（PoseLandmarkDetector / SelfieSegmentationController）が Stop() すると
+    // 背景映像まで巻き込んで止まるため、借用側では Stop() しない約束にしている。
+    private void Update()
+    {
+        if (_webCamTexture == null) return;
+
+        bool playing = _webCamTexture.isPlaying;
+
+        if (_wasPlaying && !playing)
+        {
+            Debug.LogWarning("[CameraBG] カメラの配信が停止しました（isPlaying = false）。" +
+                             $"要求解像度 {targetWidth}x{targetHeight} がデバイスの能力を" +
+                             "超えている場合（USB帯域不足など）にも起こります");
+        }
+        else if (!_wasPlaying && playing)
+        {
+            Debug.Log($"[CameraBG] カメラの配信が再開しました: " +
+                      $"{_webCamTexture.width}x{_webCamTexture.height}");
+        }
+        _wasPlaying = playing;
+
+        if (playing || !autoRestartOnStall) return;
+
+        if (Time.time - _lastRestartAttempt < restartRetryInterval) return;
+        _lastRestartAttempt = Time.time;
+
+        Debug.LogWarning("[CameraBG] カメラの再開を試みます");
+        _webCamTexture.Play();
+    }
+
     private void OnDestroy()
     {
+        // 生成した本人なのでここで止めるのが正しい
         _webCamTexture?.Stop();
     }
 }

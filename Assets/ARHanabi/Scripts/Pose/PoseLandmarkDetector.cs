@@ -56,6 +56,12 @@ public class PoseLandmarkDetector : MonoBehaviour
     [Tooltip("検出リストの順番ではなく、腰の位置で同一人物を追跡するための設定")]
     [SerializeField] private PoseTrackerSettings trackerSettings = new();
 
+    [Header("検出頻度")]
+    [Tooltip("ポーズ推定を実行する頻度（Hz）。0以下なら毎フレーム。\n" +
+             "カメラが30fpsならこれを30より上げても意味がない。\n" +
+             "重い場合は下げると推論回数がそのまま減る（追従は鈍くなる）")]
+    [SerializeField] private float detectionHz = 30f;
+
     // ── 内部状態 ──
     private WebCamTexture  _webCamTexture;
     private PoseLandmarker _poseLandmarker;
@@ -69,6 +75,9 @@ public class PoseLandmarkDetector : MonoBehaviour
 
     // 毎フレームの確保を避けるための使い回しバッファ
     private Color32[] _pixelBuffer;
+
+    // 最後に推論を投げた時刻（detectionHz による間引き用）
+    private float _lastDetectionTime = -999f;
 
     // ── Profiler マーカー ──
     // Profiler の CPU Usage > Hierarchy で "ARHanabi." を検索すると
@@ -156,7 +165,11 @@ public class PoseLandmarkDetector : MonoBehaviour
 
     private void OnDestroy()
     {
-        _webCamTexture?.Stop();
+        // WebCamTexture は CameraBackgroundController が生成・所有しているものを
+        // GetWebCamTexture() で借りているだけなので、ここで Stop() してはいけない。
+        // 停止すると背景映像の Quad と SelfieSegmentationController まで巻き込んで
+        // 映像が止まる（「時々カメラが停止する」の原因）。破棄は所有者側の責任。
+        _webCamTexture = null;
         _poseLandmarker?.Close();
 
         // Texture2D は GC 対象外のネイティブリソースなので明示的に破棄する
@@ -186,9 +199,36 @@ public class PoseLandmarkDetector : MonoBehaviour
     // ── メインループ ──
     private void Update()
     {
-        if (_poseLandmarker != null && _webCamTexture != null && _webCamTexture.didUpdateThisFrame)
+        if (_poseLandmarker == null)
         {
-            DetectFromCamera();
+            ProcessLatestResult();
+            return;
+        }
+
+        // didUpdateThisFrame は環境によって常に false を返すことがあり、
+        // これを条件にすると推論が一度も走らず「カメラが止まった」ように見える。
+        // SelfieSegmentationController には既に同じ問題の回避策が入っていたが
+        // こちら側は未対応だった。所有者から最新の参照を取り直して isPlaying で見る。
+        var latest = cameraBackgroundController != null
+                     ? cameraBackgroundController.GetWebCamTexture()
+                     : null;
+
+        if (latest != null && latest.isPlaying && latest.width > 16)
+        {
+            // カメラが作り直された場合に古い参照を掴み続けないよう毎フレーム追従する
+            if (!ReferenceEquals(latest, _webCamTexture))
+            {
+                _webCamTexture = latest;
+                AllocateBuffers(latest.width, latest.height);
+                ArLog.Info($"[Pose] WebCamTexture を再取得: {latest.width}x{latest.height}");
+            }
+
+            // 推論頻度の間引き。カメラが30fpsなら detectionHz を30より上げても無駄
+            if (detectionHz <= 0f || Time.time - _lastDetectionTime >= 1f / detectionHz)
+            {
+                _lastDetectionTime = Time.time;
+                DetectFromCamera();
+            }
         }
 
         ProcessLatestResult();
