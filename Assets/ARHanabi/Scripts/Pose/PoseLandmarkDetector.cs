@@ -1,5 +1,6 @@
 using System.Collections;
 using System.Collections.Generic;
+using Unity.Profiling;
 using UnityEngine;
 using UnityEngine.UI;
 using Mediapipe.Tasks.Vision.PoseLandmarker;
@@ -68,6 +69,15 @@ public class PoseLandmarkDetector : MonoBehaviour
 
     // 毎フレームの確保を避けるための使い回しバッファ
     private Color32[] _pixelBuffer;
+
+    // ── Profiler マーカー ──
+    // Profiler の CPU Usage > Hierarchy で "ARHanabi." を検索すると
+    // どの工程に何ミリ秒かかっているかが名前付きで読める。
+    // ProfilerMarker.Auto() は構造体を返すのでアロケーションは発生しない。
+    private static readonly ProfilerMarker _markerReadback = new("ARHanabi.Pose.Readback");
+    private static readonly ProfilerMarker _markerUpload   = new("ARHanabi.Pose.Upload");
+    private static readonly ProfilerMarker _markerDetect   = new("ARHanabi.Pose.DetectAsync");
+    private static readonly ProfilerMarker _markerDispatch = new("ARHanabi.Pose.Dispatch");
 
     // スレッド間の受け渡し（最新の1件のみ保持）
     private PoseLandmarkerResult _latestResult;
@@ -189,17 +199,29 @@ public class PoseLandmarkDetector : MonoBehaviour
         // 解像度が途中で変わることがあるため念のため確認
         AllocateBuffers(_webCamTexture.width, _webCamTexture.height);
 
-        // 事前確保した配列に直接受け取る（戻り値の新規配列確保を避ける）
-        _webCamTexture.GetPixels32(_pixelBuffer);
-
-        // Color32 と RGBA32 はメモリレイアウトが一致するので、変換なしの生コピーで済む
-        _inputTexture.SetPixelData(_pixelBuffer, 0);
-        _inputTexture.Apply(false);
-
-        using (var image = new Mediapipe.Image(_inputTexture))
+        // GPU→CPU の読み戻し。カメラ解像度に比例して重く、GPU パイプラインを待たせる
+        using (_markerReadback.Auto())
         {
-            long timestamp = (long)(Time.realtimeSinceStartup * 1000);
-            _poseLandmarker.DetectAsync(image, timestamp);
+            // 事前確保した配列に直接受け取る（戻り値の新規配列確保を避ける）
+            _webCamTexture.GetPixels32(_pixelBuffer);
+        }
+
+        // CPU コピー ＋ CPU→GPU アップロード
+        using (_markerUpload.Auto())
+        {
+            // Color32 と RGBA32 はメモリレイアウトが一致するので、変換なしの生コピーで済む
+            _inputTexture.SetPixelData(_pixelBuffer, 0);
+            _inputTexture.Apply(false);
+        }
+
+        // MediaPipe への投入。numPoses の値と入力解像度に比例して重くなる
+        using (_markerDetect.Auto())
+        {
+            using (var image = new Mediapipe.Image(_inputTexture))
+            {
+                long timestamp = (long)(Time.realtimeSinceStartup * 1000);
+                _poseLandmarker.DetectAsync(image, timestamp);
+            }
         }
     }
 
@@ -219,24 +241,28 @@ public class PoseLandmarkDetector : MonoBehaviour
 
         ArLog.Verbose($"[Pose] 検出人数: {result.poseLandmarks.Count}");
 
-        _tracker.BeginFrame();
-
-        for (int i = 0; i < result.poseLandmarks.Count; i++)
+        // 追跡・ジェスチャー判定・スケルトン描画の合計。推論結果が来たフレームだけ走る
+        using (_markerDispatch.Auto())
         {
-            var landmarks = result.poseLandmarks[i].landmarks;
+            _tracker.BeginFrame();
 
-            // 腰中心（landmark 23 = 左腰 / 24 = 右腰）で人物を照合する。
-            // ランドマーク数が足りない検出はスキップする（追跡が壊れるため）
-            if (landmarks == null || landmarks.Count < 25) continue;
+            for (int i = 0; i < result.poseLandmarks.Count; i++)
+            {
+                var landmarks = result.poseLandmarks[i].landmarks;
 
-            int trackId = _tracker.Resolve(HipCenter(landmarks));
+                // 腰中心（landmark 23 = 左腰 / 24 = 右腰）で人物を照合する。
+                // ランドマーク数が足りない検出はスキップする（追跡が壊れるため）
+                if (landmarks == null || landmarks.Count < 25) continue;
 
-            gestureDetector ?.ProcessLandmarks(trackId, landmarks);
-            skeletonRenderer?.UpdateSkeleton(trackId, landmarks);
+                int trackId = _tracker.Resolve(HipCenter(landmarks));
+
+                gestureDetector ?.ProcessLandmarks(trackId, landmarks);
+                skeletonRenderer?.UpdateSkeleton(trackId, landmarks);
+            }
+
+            // タイムアウトしたトラックの後始末。デリゲートはフィールドにキャッシュ済み
+            _tracker.EndFrame(_onTrackLost);
         }
-
-        // タイムアウトしたトラックの後始末。デリゲートはフィールドにキャッシュ済み
-        _tracker.EndFrame(_onTrackLost);
     }
 
     // ── 腰中心の算出 ──
