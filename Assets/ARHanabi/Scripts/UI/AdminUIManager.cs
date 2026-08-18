@@ -1,5 +1,6 @@
 using UnityEngine;
 using UnityEngine.UI;
+using UnityEngine.InputSystem;
 using TMPro;
 using System.Collections;
 using System.Collections.Generic;
@@ -24,6 +25,14 @@ using System.IO;
 //   2. AdminPanel に AdminUIManager をアタッチ
 //   3. Inspector の各フィールドに UI 要素を割り当て
 //   4. FireworkManager を同シーンに配置しておく
+//   ※ CanvasGroup は Awake() で自動追加されるので手動追加は不要
+//
+// 表示制御:
+//   [閉じる] ボタンは gameObject.SetActive(false) ではなく CanvasGroup の
+//   alpha / interactable / blocksRaycasts を落として「見た目だけ」隠す。
+//   GameObject を落とすと AdminUIManager 自身が停止し、再表示する手段が
+//   どこにも無くなる（かつ API 取得コルーチンも巻き込んで死ぬ）ため。
+//   再表示は F1 キー、または外部から SetVisible(true) / ToggleVisible()。
 //
 // 将来拡張:
 //   ・isShareable フィールドの表示
@@ -55,15 +64,79 @@ public class AdminUIManager : MonoBehaviour
     [Header("Test Launch Position")]
     [SerializeField] private Vector3 testLaunchPosition = new Vector3(0f, 5f, 0f);
 
+    [Header("表示制御")]
+    [Tooltip("起動時にパネルを表示するか")]
+    [SerializeField] private bool visibleOnStart = true;
+    [Tooltip("F1キーで管理画面の表示/非表示をトグルする（新Input System）")]
+    [SerializeField] private bool toggleWithF1 = true;
+
+    [Header("行の見た目")]
+    [Tooltip("通常の行の背景色")]
+    [SerializeField] private Color rowNormalColor   = new Color(1f, 1f, 1f, 0.04f);
+    [Tooltip("選択中の行の背景色（ハイライト）")]
+    [SerializeField] private Color rowSelectedColor = new Color(0.35f, 0.55f, 0.95f, 0.35f);
+
+    [Header("削除の2段階確認")]
+    [Tooltip("1回目のクリックから、この秒数内に再クリックされたら実際に削除する")]
+    [SerializeField] private float deleteConfirmSeconds = 3f;
+    [Tooltip("確認待ち状態の削除ボタンの色（警告色）")]
+    [SerializeField] private Color deleteConfirmColor = new Color(0.95f, 0.6f, 0.1f);
+
+    [Header("ボタンのラベル")]
+    [Tooltip("ボタンラベルの自動縮小の下限フォントサイズ")]
+    [SerializeField] private float buttonFontSizeMin = 8f;
+    [Tooltip("ボタンラベルの自動縮小の上限フォントサイズ")]
+    [SerializeField] private float buttonFontSizeMax = 12f;
+
+    // ── 定数 ──
+    private const float ButtonMinWidth = 72f;   // 従来の preferredWidth。今は「最小幅」として扱う
+    private const float ButtonHeight   = 36f;
+    private const float EntryRowHeight = 64f;   // AdminUIBuilder.EntryRowHeight と一致させる
+
     // ── 内部 ──
-    private FireworkManager       _manager;
-    private FireworkEntry         _selectedEntry;
-    private readonly List<GameObject> _rowObjects = new();
+    private FireworkManager _manager;
+    private FireworkEntry   _selectedEntry;
+    private CanvasGroup     _canvasGroup;
+    private bool            _isVisible = true;
+    private bool            _isConvertingAll;
+
+    // 行GameObject と FireworkEntry の対応表。
+    // 選択ハイライトは全行 Destroy → 再生成ではなく、この表を使って背景色だけ差し替える。
+    private readonly List<EntryRow> _rows = new();
+
+    // 1行ぶんの UI 参照
+    private class EntryRow
+    {
+        public FireworkEntry   entry;
+        public GameObject      rowGO;
+        public Image           background;
+        public Image           deleteImage;
+        public TextMeshProUGUI deleteLabel;
+        public Color           deleteNormalColor;
+        public string          deleteNormalLabel;
+        public Coroutine       confirmRoutine;   // 確認待ちタイマー（AdminUIManager 側で回す）
+        public bool            awaitingConfirm;
+    }
 
     // ── ライフサイクル ──
+    private void Awake()
+    {
+        // 「見た目だけ隠す」方式に必要。シーン側での手動追加は不要にする。
+        _canvasGroup = GetComponent<CanvasGroup>();
+        if (_canvasGroup == null)
+        {
+            _canvasGroup = gameObject.AddComponent<CanvasGroup>();
+            Debug.Log("[AdminUI] CanvasGroup added automatically");
+        }
+    }
+
     private void Start()
     {
         Debug.Log("[AdminUI] Start called - v2");
+
+        // FireworkManager が無くても表示トグルだけは効くように、先に適用しておく
+        ApplyVisible(visibleOnStart);
+
         _manager = FireworkManager.Instance;
         if (_manager == null)
         {
@@ -75,7 +148,7 @@ public class AdminUIManager : MonoBehaviour
         addImageButton    ?.onClick.AddListener(OnAddImageClicked);
         convertAllButton  ?.onClick.AddListener(OnConvertAllClicked);
         testLaunchButton  ?.onClick.AddListener(OnTestLaunchClicked);
-        closeButton       ?.onClick.AddListener(() => gameObject.SetActive(false));
+        closeButton       ?.onClick.AddListener(() => SetVisible(false));
 
         // 背景除去トグル
         segmentationToggleButton?.onClick.AddListener(OnSegmentationToggleClicked);
@@ -88,13 +161,68 @@ public class AdminUIManager : MonoBehaviour
         _manager.OnEntriesChanged += RefreshList;
 
         RefreshList();
-        SetStatus("[OK] Admin UI ready");
+        SetStatus("[OK] Admin UI ready  (F1: show/hide)");
+    }
+
+    private void Update()
+    {
+        HealStuckButtons();
+
+        if (!toggleWithF1) return;
+
+        // 新 Input System 専用プロジェクト（activeInputHandler: 1）なので
+        // Input.GetKeyDown は InvalidOperationException になる。Keyboard を直接見る。
+        var keyboard = Keyboard.current;
+        if (keyboard == null) return;   // キーボード未接続（モバイル等）では何もしない
+
+        if (keyboard.f1Key.wasPressedThisFrame)
+            ToggleVisible();
+    }
+
+    // 処理中はボタンを無効化しているが、コールバックが届かないまま
+    // コルーチンが死ぬとボタンが無効のまま固まって二度と押せなくなる。
+    // 実際の進行状態（IsFetching）を正として毎フレーム突き合わせて復帰させる。
+    private void HealStuckButtons()
+    {
+        if (_manager == null) return;
+
+        if (refreshButton != null && !refreshButton.interactable && !_manager.IsFetching)
+        {
+            refreshButton.interactable = true;
+            Debug.LogWarning("[AdminUI] 更新ボタンが無効のまま残っていたので復帰させました");
+        }
+
+        if (convertAllButton != null && !convertAllButton.interactable && !_isConvertingAll)
+            convertAllButton.interactable = true;
     }
 
     private void OnDestroy()
     {
         if (_manager != null)
             _manager.OnEntriesChanged -= RefreshList;
+    }
+
+    // ── 表示 / 非表示 ──
+
+    public bool IsVisible => _isVisible;
+
+    public void ToggleVisible() => SetVisible(!_isVisible);
+
+    public void SetVisible(bool value)
+    {
+        ApplyVisible(value);
+        Debug.Log($"[AdminUI] Panel {(value ? "shown" : "hidden")} (F1 to toggle)");
+    }
+
+    private void ApplyVisible(bool value)
+    {
+        _isVisible = value;
+        if (_canvasGroup == null) return;
+
+        // GameObject は落とさない（コルーチンと Update を生かしたまま見た目だけ消す）
+        _canvasGroup.alpha          = value ? 1f : 0f;
+        _canvasGroup.interactable   = value;
+        _canvasGroup.blocksRaycasts = value;
     }
 
     // ── ボタンハンドラ ──
@@ -131,9 +259,27 @@ public class AdminUIManager : MonoBehaviour
 
     private void OnConvertAllClicked()
     {
+        if (_manager == null) return;
+        if (_isConvertingAll)
+        {
+            SetStatus("[WARN] Already converting");
+            return;
+        }
+
+        _isConvertingAll = true;
+        SetConvertAllInteractable(false);
         SetStatus("Converting...");
-        _manager.ConvertAll();
-        SetStatus("[OK] All converted");
+
+        // 変換は重いのでコルーチン版を使う（同期版だと "Converting..." が
+        // 同一フレーム内で上書きされ、画面に一度も出ないまま固まる）。
+        // コルーチンは FireworkManager 側で回す。OnRefreshClicked と同じ理由で、
+        // このパネルが外部から SetActive(false) されても変換が中断しないようにするため。
+        _manager.StartCoroutine(_manager.ConvertAllCoroutine(count =>
+        {
+            _isConvertingAll = false;
+            SetConvertAllInteractable(true);
+            SetStatus($"[OK] Converted {count}");
+        }));
     }
 
     private void OnTestLaunchClicked()
@@ -170,8 +316,8 @@ public class AdminUIManager : MonoBehaviour
         SetStatus("Fetching from API...");
 
         // コルーチンは FireworkManager 側で回す。
-        // このパネルは [閉じる] で SetActive(false) されるため、自分で StartCoroutine すると
-        // 取得中に閉じられた瞬間にコルーチンが死に、IsFetching が立ちっぱなしになる。
+        // このパネルが非アクティブ化されると自分で StartCoroutine したコルーチンは
+        // 取得中に死に、IsFetching が立ちっぱなしになる。
         _manager.StartCoroutine(_manager.FetchNewEntriesFromApi((added, err) =>
         {
             SetRefreshInteractable(true);
@@ -189,13 +335,22 @@ public class AdminUIManager : MonoBehaviour
         if (refreshButton != null) refreshButton.interactable = value;
     }
 
+    private void SetConvertAllInteractable(bool value)
+    {
+        if (convertAllButton != null) convertAllButton.interactable = value;
+    }
+
     // ── エントリ一覧の再描画 ──
     public void RefreshList()
     {
-        // 既存行を削除
-        foreach (var go in _rowObjects)
-            if (go != null) Destroy(go);
-        _rowObjects.Clear();
+        // 既存行を削除（確認待ちタイマーも止める）
+        foreach (var row in _rows)
+        {
+            if (row == null) continue;
+            StopConfirmRoutine(row);
+            if (row.rowGO != null) Destroy(row.rowGO);
+        }
+        _rows.Clear();
 
         if (_manager == null || entryListContent == null) return;
 
@@ -205,24 +360,91 @@ public class AdminUIManager : MonoBehaviour
         foreach (var e in _manager.Entries) if (e.isActive) active++;
         SetStatus($"Entries: {total}  Active: {active}");
 
+        // 削除済みエントリが選択されたままにならないように
+        if (_selectedEntry != null && !ContainsEntry(_selectedEntry))
+            ClearSelection();
+
         // エントリ行を生成
         foreach (var entry in _manager.Entries)
         {
-            var rowGO = BuildEntryRow(entry);
-            rowGO.transform.SetParent(entryListContent, false);
-            _rowObjects.Add(rowGO);
+            var row = BuildEntryRow(entry);
+            row.rowGO.transform.SetParent(entryListContent, false);
+            _rows.Add(row);
+        }
+
+        RefreshRowHighlights();
+    }
+
+    // Entries は IReadOnlyList なので Contains が無い。LINQ を持ち込まず線形探索する。
+    private bool ContainsEntry(FireworkEntry entry)
+    {
+        var entries = _manager.Entries;
+        for (int i = 0; i < entries.Count; i++)
+            if (entries[i] == entry) return true;
+        return false;
+    }
+
+    // ── 選択ハイライト（行を作り直さない軽い経路）──
+    private void SelectEntry(FireworkEntry entry)
+    {
+        _selectedEntry = entry;
+
+        // RefreshList() は全行 Destroy → 再生成になるので使わない。背景色だけ差し替える。
+        RefreshRowHighlights();
+
+        if (previewImage != null) previewImage.texture = entry.localTexture;
+        if (detailText   != null)
+        {
+            detailText.text = entry.isConverted
+                ? $"Particles: {entry.particleData.particles.Length}\nSize: {entry.particleData.width}x{entry.particleData.height}"
+                : "Not converted";
+        }
+        SetStatus($"Selected: {entry.displayName}");
+    }
+
+    // 選択解除。プレビューも一緒に空にする。
+    // FireworkManager.RemoveEntry() が localTexture を Destroy するため、
+    // ここを残すと RawImage が破棄済みテクスチャを握ったままになる。
+    private void ClearSelection()
+    {
+        _selectedEntry = null;
+        if (previewImage != null) previewImage.texture = null;
+        if (detailText   != null) detailText.text      = "";
+    }
+
+    private void RefreshRowHighlights()
+    {
+        foreach (var row in _rows)
+        {
+            if (row == null || row.background == null) continue;
+            row.background.color = (row.entry == _selectedEntry && _selectedEntry != null)
+                ? rowSelectedColor
+                : rowNormalColor;
         }
     }
 
     // ── エントリ行のコード生成 ──
     // Prefab を用意しない場合のフォールバック。
     // Prefab がある場合は BuildEntryRow の中身を差し替えてください。
-    private GameObject BuildEntryRow(FireworkEntry entry)
+    private EntryRow BuildEntryRow(FireworkEntry entry)
     {
         // ── 行ルート ──
         var rowGO  = new GameObject($"Row_{entry.displayName}");
         var rowRT  = rowGO.AddComponent<RectTransform>();
-        rowRT.sizeDelta = new Vector2(0f, 64f);
+        rowRT.sizeDelta = new Vector2(0f, EntryRowHeight);
+
+        // 親（Viewport > Content）の VerticalLayoutGroup は子の高さを
+        // LayoutElement から決めるため、sizeDelta だけでは効かない。
+        // 値は AdminUIBuilder.EntryRowHeight と揃えること。
+        var rowLe = rowGO.AddComponent<LayoutElement>();
+        rowLe.minHeight       = EntryRowHeight;
+        rowLe.preferredHeight = EntryRowHeight;
+        rowLe.flexibleHeight  = 0f;
+
+        // 選択ハイライト用の背景（クリックを奪わないよう raycastTarget は切る）
+        var bg = rowGO.AddComponent<Image>();
+        bg.color         = rowNormalColor;
+        bg.raycastTarget = false;
 
         var hLayout = rowGO.AddComponent<HorizontalLayoutGroup>();
         hLayout.spacing        = 8f;
@@ -230,6 +452,13 @@ public class AdminUIManager : MonoBehaviour
         hLayout.childAlignment = TextAnchor.MiddleLeft;
         hLayout.childForceExpandWidth  = false;
         hLayout.childForceExpandHeight = true;
+
+        var row = new EntryRow
+        {
+            entry      = entry,
+            rowGO      = rowGO,
+            background = bg,
+        };
 
         // サムネイル
         var thumb    = MakeChild<RawImage>(rowGO.transform, "Thumb", new Vector2(52f, 52f));
@@ -265,28 +494,100 @@ public class AdminUIManager : MonoBehaviour
                 // ラベルはOnEntriesChanged → RefreshListで更新される
             }, out activeLabel);
 
-        // [選択] ボタン（プレビューパネルに反映）
-        MakeButton(rowGO.transform, "Select", new Color(0.6f, 0.4f, 0.8f), () =>
-        {
-            _selectedEntry = entry;
-            if (previewImage != null)  previewImage.texture = entry.localTexture;
-            if (detailText   != null)
-            {
-                detailText.text = entry.isConverted
-                    ? $"Particles: {entry.particleData.particles.Length}\nSize: {entry.particleData.width}x{entry.particleData.height}"
-                    : "Not converted";
-            }
-            SetStatus($"Selected: {entry.displayName}");
-        });
+        // [選択] ボタン（プレビューパネルと行ハイライトに反映）
+        MakeButton(rowGO.transform, "Select", new Color(0.6f, 0.4f, 0.8f),
+            () => SelectEntry(entry));
 
-        // [削除] ボタン
-        MakeButton(rowGO.transform, "✕", new Color(0.8f, 0.2f, 0.2f), () =>
-        {
-            if (_selectedEntry == entry) _selectedEntry = null;
-            _manager.RemoveEntry(entry);
-        });
+        // [削除] ボタン（2段階確認。1回目で「確認?」、時間切れで元に戻る）
+        var deleteColor = new Color(0.8f, 0.2f, 0.2f);
+        var delBtn = MakeButton(rowGO.transform, "✕", deleteColor,
+            () => OnDeleteClicked(row), out var delLabel);
+        row.deleteImage       = delBtn.image;
+        row.deleteLabel       = delLabel;
+        row.deleteNormalColor = deleteColor;
+        row.deleteNormalLabel = "✕";
 
-        return rowGO;
+        return row;
+    }
+
+    // ── 削除の2段階確認 ──
+
+    private void OnDeleteClicked(EntryRow row)
+    {
+        if (row == null || row.entry == null || _manager == null) return;
+
+        if (!row.awaitingConfirm)
+        {
+            BeginDeleteConfirm(row);
+            return;
+        }
+
+        // 2回目のクリック → 実際に削除
+        StopConfirmRoutine(row);
+        row.awaitingConfirm = false;
+
+        var entry = row.entry;
+        if (_selectedEntry == entry) ClearSelection();
+
+        SetStatus($"[OK] Removed: {entry.displayName}");
+        _manager.RemoveEntry(entry);   // → OnEntriesChanged → RefreshList で行が作り直される
+    }
+
+    private void BeginDeleteConfirm(EntryRow row)
+    {
+        // 他の行の確認待ちは畳んでおく（誤タップの取り違えを防ぐ）
+        foreach (var other in _rows)
+        {
+            if (other == null || other == row || !other.awaitingConfirm) continue;
+            StopConfirmRoutine(other);
+            ResetDeleteButton(other);
+        }
+
+        row.awaitingConfirm = true;
+        if (row.deleteLabel != null) row.deleteLabel.text  = "確認?";
+        if (row.deleteImage != null) row.deleteImage.color = deleteConfirmColor;
+
+        // タイマーは行ではなく this（AdminUIManager）で回す。
+        // 行が Destroy されてもコルーチンが道連れにならないようにするため。
+        StopConfirmRoutine(row);
+        row.confirmRoutine = StartCoroutine(DeleteConfirmTimeout(row));
+
+        SetStatus($"[WARN] Tap again to delete: {row.entry.displayName}");
+    }
+
+    private IEnumerator DeleteConfirmTimeout(EntryRow row)
+    {
+        float elapsed = 0f;
+        while (elapsed < deleteConfirmSeconds)
+        {
+            // 行が作り直された / 破棄された場合はここで抜ける
+            if (row == null || row.rowGO == null) yield break;
+            elapsed += Time.unscaledDeltaTime;
+            yield return null;
+        }
+
+        if (row == null) yield break;
+        row.confirmRoutine = null;
+        row.awaitingConfirm = false;
+        ResetDeleteButton(row);
+
+        if (row.rowGO != null && row.entry != null)
+            SetStatus($"Delete cancelled: {row.entry.displayName}");
+    }
+
+    private void ResetDeleteButton(EntryRow row)
+    {
+        if (row == null) return;
+        row.awaitingConfirm = false;
+        if (row.deleteLabel != null) row.deleteLabel.text  = row.deleteNormalLabel;
+        if (row.deleteImage != null) row.deleteImage.color = row.deleteNormalColor;
+    }
+
+    private void StopConfirmRoutine(EntryRow row)
+    {
+        if (row == null || row.confirmRoutine == null) return;
+        StopCoroutine(row.confirmRoutine);
+        row.confirmRoutine = null;
     }
 
     // ── ステータスラベルだけを更新 ──
@@ -320,33 +621,51 @@ public class AdminUIManager : MonoBehaviour
     }
 
     private Button MakeButton(Transform parent, string label, Color bgColor,
-        System.Action onClick, out TextMeshProUGUI labelOut)
+        System.Action onClick, out TextMeshProUGUI labelOut, float minWidth = ButtonMinWidth)
     {
         var go  = new GameObject($"Btn_{label}");
         go.transform.SetParent(parent, false);
 
+        // 幅は固定せず「最小幅」として扱う。
+        // preferredWidth を -1（未設定）にすると LayoutElement は幅を上書きせず、
+        // 下の HorizontalLayoutGroup が算出する値（= ラベルの preferredWidth + padding）が
+        // 採用される。日本語ラベル（"確認?" "更新" など）でも切れずに伸びる。
         var le  = go.AddComponent<LayoutElement>();
-        le.preferredWidth  = 72f;
-        le.preferredHeight = 36f;
+        le.minWidth        = minWidth;
+        le.preferredWidth  = -1f;
+        le.minHeight       = ButtonHeight;
+        le.preferredHeight = ButtonHeight;
 
         var img = go.AddComponent<Image>();
         img.color = bgColor;
 
         var btn = go.AddComponent<Button>();
+        btn.targetGraphic = img;   // interactable = false の見た目を効かせる
         btn.onClick.AddListener(() => onClick());
+
+        // ラベルをレイアウトの子として扱い、テキスト幅をボタン幅へ伝える
+        var inner = go.AddComponent<HorizontalLayoutGroup>();
+        inner.padding                = new RectOffset(10, 10, 2, 2);
+        inner.childAlignment         = TextAnchor.MiddleCenter;
+        inner.childControlWidth      = true;
+        inner.childControlHeight     = true;
+        inner.childForceExpandWidth  = true;
+        inner.childForceExpandHeight = true;
 
         // テキスト
         var textGO  = new GameObject("Label");
         textGO.transform.SetParent(go.transform, false);
         var tmp     = textGO.AddComponent<TextMeshProUGUI>();
         tmp.text      = label;
-        tmp.fontSize  = 12f;
         tmp.alignment = TextAlignmentOptions.Center;
         tmp.color     = Color.white;
-        var trt       = textGO.GetComponent<RectTransform>();
-        trt.anchorMin = Vector2.zero;
-        trt.anchorMax = Vector2.one;
-        trt.sizeDelta = Vector2.zero;
+
+        // 溢れ対策: 1行維持したままフォントを自動縮小する
+        tmp.textWrappingMode = TextWrappingModes.NoWrap;
+        tmp.enableAutoSizing = true;
+        tmp.fontSizeMin      = buttonFontSizeMin;
+        tmp.fontSizeMax      = buttonFontSizeMax;
+        tmp.fontSize         = buttonFontSizeMax;
 
         labelOut = tmp;
         return btn;
@@ -354,9 +673,9 @@ public class AdminUIManager : MonoBehaviour
 
     // overload（labelOut 不要な場合）
     private Button MakeButton(Transform parent, string label, Color bgColor,
-        System.Action onClick)
+        System.Action onClick, float minWidth = ButtonMinWidth)
     {
-        return MakeButton(parent, label, bgColor, onClick, out _);
+        return MakeButton(parent, label, bgColor, onClick, out _, minWidth);
     }
 
     // ── セグメンテーション ON/OFF ──

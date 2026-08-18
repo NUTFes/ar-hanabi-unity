@@ -2,14 +2,36 @@ using System.Collections.Generic;
 using UnityEngine;
 using Mediapipe.Tasks.Components.Containers;
 
+// ===== GestureDetector =====
+// MediaPipe Pose のランドマークからジェスチャー（両手上げ／片手上げ／ジャンプ）を判定し、
+// PoseEventBus 経由で花火の発射イベントを流す。
+//
+// ログについて（コードレビュー指摘 4.11）:
+//   判定用の詳細ログは「毎フレーム × 最大5人」で出るため、以前は 1秒あたり1,000本超の
+//   Debug.Log が発生していた（1本あたり10〜50µs なので実測で効くレベル）。
+//   これらは ArLog.Verbose に置き換えてあり、AR_VERBOSE_LOG が未定義なら
+//   呼び出しごと消える（文字列補間のコストもゼロになる）。
+//   一方でジェスチャーが成立した瞬間のログは gestureCooldown で頻度が抑えられているため
+//   Debug.Log のまま残している。
+//
+// 詳細ログを見たい場合は ArLog.cs 冒頭の手順で AR_VERBOSE_LOG を定義する。
+
 public class GestureDetector : MonoBehaviour
 {
     [Header("ジェスチャー判定設定")]
-    [SerializeField] private float handUpThreshold    = 0.15f; // 手が肩より何割上なら「上げた」と判定
-    [SerializeField] private float jumpThreshold      = 0.06f; // ジャンプ判定の閾値（大きいほど誤検知しにくい）
-    [SerializeField] private float gestureCooldown    = 2.0f;  // 同じジェスチャーの連続発火を防ぐ秒数
-    [SerializeField] private float poseHoldDuration   = 0.5f;  // ポーズを何秒維持したら発射するか
+    [Tooltip("手が肩より何割上なら「上げた」と判定するか（肩幅に対する相対値）")]
+    [SerializeField] private float handUpThreshold    = 0.15f;
 
+    [Tooltip("ジャンプ判定の閾値（肩幅に対する相対値。大きいほど誤検知しにくい）")]
+    [SerializeField] private float jumpThreshold      = 0.06f;
+
+    [Tooltip("同じジェスチャーの連続発火を防ぐ秒数")]
+    [SerializeField] private float gestureCooldown    = 2.0f;
+
+    [Tooltip("ポーズを何秒維持したら発射するか")]
+    [SerializeField] private float poseHoldDuration   = 0.5f;
+
+    // ── 人ごとの判定状態 ──
     private class PersonState
     {
         public float prevHipY             = -1f;
@@ -24,6 +46,8 @@ public class GestureDetector : MonoBehaviour
 
     private readonly Dictionary<int, PersonState> _personStates = new();
 
+    // ── ランドマーク処理（毎フレーム × 人数分呼ばれる）──
+    // personIndex: 何人目か（PoseTracker が振る安定した trackId が渡される想定）
     public void ProcessLandmarks(int personIndex, List<NormalizedLandmark> landmarks)
     {
         if (landmarks == null || landmarks.Count < 29) return;
@@ -57,9 +81,10 @@ public class GestureDetector : MonoBehaviour
         float dynamicHandUpThreshold = shoulderWidth * handUpThreshold;
         float dynamicJumpThreshold   = shoulderWidth * jumpThreshold;
 
-        Debug.Log($"[Pose] P{personIndex} shoulderWidth={shoulderWidth:F3} " +
-                $"handUpThreshold={dynamicHandUpThreshold:F3} " +
-                $"jumpThreshold={dynamicJumpThreshold:F3}");
+        // 毎フレーム × 人数分出るので Verbose
+        ArLog.Verbose($"[Pose] P{personIndex} shoulderWidth={shoulderWidth:F3} " +
+                      $"handUpThreshold={dynamicHandUpThreshold:F3} " +
+                      $"jumpThreshold={dynamicJumpThreshold:F3}");
 
         // ── ジャンプ判定 ──
         float hipY = (leftHip.y + rightHip.y) / 2f;
@@ -80,11 +105,12 @@ public class GestureDetector : MonoBehaviour
         bool  bothHandsUp = leftHandUp && rightHandUp;
         bool  oneHandUp   = leftHandUp ^ rightHandUp;
 
-        Debug.Log($"[Pose] P{personIndex} " +
-                $"shoulderY={shoulderY:F2} " +
-                $"leftWristY={leftWrist.y:F2} rightWristY={rightWrist.y:F2} " +
-                $"leftUp={leftHandUp} rightUp={rightHandUp} " +
-                $"canFire={canFire}");
+        // 毎フレーム × 人数分出るので Verbose
+        ArLog.Verbose($"[Pose] P{personIndex} " +
+                      $"shoulderY={shoulderY:F2} " +
+                      $"leftWristY={leftWrist.y:F2} rightWristY={rightWrist.y:F2} " +
+                      $"leftUp={leftHandUp} rightUp={rightHandUp} " +
+                      $"canFire={canFire}");
 
         // 両手上げ
         if (bothHandsUp)
@@ -96,7 +122,8 @@ public class GestureDetector : MonoBehaviour
             state.oneHandFired       = false;
 
             float heldDuration = now - state.bothHandsUpStartTime;
-            Debug.Log($"[Pose] P{personIndex} 両手上げ中: {heldDuration:F2}秒 / {poseHoldDuration}秒");
+            // ポーズを維持している間ずっと出るので Verbose
+            ArLog.Verbose($"[Pose] P{personIndex} 両手上げ中: {heldDuration:F2}秒 / {poseHoldDuration}秒");
 
             if (heldDuration >= poseHoldDuration && !state.bothHandsFired && canFire)
             {
@@ -117,7 +144,8 @@ public class GestureDetector : MonoBehaviour
                 state.oneHandUpStartTime = now;
 
             float heldDuration = now - state.oneHandUpStartTime;
-            Debug.Log($"[Pose] P{personIndex} 片手上げ中: {heldDuration:F2}秒 / {poseHoldDuration}秒");
+            // ポーズを維持している間ずっと出るので Verbose
+            ArLog.Verbose($"[Pose] P{personIndex} 片手上げ中: {heldDuration:F2}秒 / {poseHoldDuration}秒");
 
             if (heldDuration >= poseHoldDuration && !state.oneHandFired && canFire)
             {
@@ -130,19 +158,65 @@ public class GestureDetector : MonoBehaviour
             state.oneHandUpStartTime = -1f;
             state.oneHandFired       = false;
         }
-    }
 
-    private void FireGesture(
-        int personIndex, GestureType gesture,
-        Vector2 screenPos, PersonState state)
-    {
-        state.lastGestureTime = Time.time;
-        PoseEventBus.Instance?.FireGesture(personIndex, gesture, screenPos);
-        Debug.Log($"[Gesture] Person{personIndex}: {gesture}");
+        // ── 状態の配信 ──
+        // 優先順位は Cooldown > Charging > Idle。
+        // クールダウン中は canFire が false で実際には発射できないため、
+        // 保持中の見た目を出すと「溜まっているのに撃てない」という嘘になる。
+        var feedback = new PoseFeedback { trackId = personIndex };
+
+        if (!canFire)
+        {
+            feedback.state    = PoseFeedbackState.Cooldown;
+            feedback.progress = gestureCooldown <= 0f
+                ? 0f
+                : 1f - Mathf.Clamp01((now - state.lastGestureTime) / gestureCooldown);
+        }
+        else if (state.bothHandsUpStartTime >= 0f)
+        {
+            feedback.state    = PoseFeedbackState.Charging;
+            feedback.gesture  = GestureType.BothHandsUp;
+            feedback.progress = poseHoldDuration <= 0f
+                ? 1f
+                : Mathf.Clamp01((now - state.bothHandsUpStartTime) / poseHoldDuration);
+        }
+        else if (state.oneHandUpStartTime >= 0f)
+        {
+            feedback.state    = PoseFeedbackState.Charging;
+            feedback.gesture  = GestureType.OneHandUp;
+            feedback.progress = poseHoldDuration <= 0f
+                ? 1f
+                : Mathf.Clamp01((now - state.oneHandUpStartTime) / poseHoldDuration);
+        }
+        else
+        {
+            feedback.state = PoseFeedbackState.Idle;
+        }
+
+        PoseEventBus.Instance?.ReportFeedback(feedback);
     }
 
     public void RemovePerson(int personIndex)
     {
         _personStates.Remove(personIndex);
+    }
+
+    // ── 発射 ──
+    private void FireGesture(
+        int personIndex, GestureType gesture,
+        Vector2 screenPos, PersonState state)
+    {
+        state.lastGestureTime = Time.time;
+
+        if (PoseEventBus.Instance == null)
+        {
+            ArLog.Warn("[Gesture] PoseEventBus が存在しないためイベントを発行できません");
+            return;
+        }
+
+        PoseEventBus.Instance.FireGesture(personIndex, gesture, screenPos);
+
+        // gestureCooldown が効くので低頻度。運用上必要なログなので常時出す
+        Debug.Log($"[Gesture] Person{personIndex}: {gesture}");
     }
 }

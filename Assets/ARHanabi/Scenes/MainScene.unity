@@ -258,7 +258,7 @@ GameObject:
   - component: {fileID: 110828667}
   - component: {fileID: 110828666}
   m_Layer: 5
-  m_Name: SegmantationToggleButton
+  m_Name: SegmentationToggleButton
   m_TagString: Untagged
   m_Icon: {fileID: 0}
   m_NavMeshLayer: 0
@@ -3062,6 +3062,8 @@ MonoBehaviour:
   m_Name: 
   m_EditorClassIdentifier: Assembly-CSharp::SkeletonRenderer
   mainCamera: {fileID: 171839185}
+  backgroundQuad: {fileID: 1135560883}
+  quadOffset: 0.05
   drawDistance: 9
   lineWidth: 0.1
   lineMaterial: {fileID: 2100000, guid: 60ee01d93ba283941b21b588ac0fe744, type: 2}
@@ -3573,7 +3575,7 @@ Camera:
   m_Depth: 0
   m_CullingMask:
     serializedVersion: 2
-    m_Bits: 4294967295
+    m_Bits: 0
   m_RenderingPath: -1
   m_TargetTexture: {fileID: 0}
   m_TargetDisplay: 0
