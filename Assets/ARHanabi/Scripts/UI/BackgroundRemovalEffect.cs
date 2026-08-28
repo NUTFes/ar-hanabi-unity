@@ -102,7 +102,12 @@ public class BackgroundRemovalEffect : MonoBehaviour
             Debug.LogWarning("[BGRemoval] sharedMaterial が差し替わっていたため再セットしました");
         }
 
-        // 60フレームに1回状態をログ
+        // 60フレームに1回状態をログ。
+        // 背景除去が OFF のときは何も出さない。以前は enableSegmentation を見ずに
+        // 出していたため、機能を使っていない間もずっと毎秒1本 Console を流し続け、
+        // 他のログ（花火やカメラ切替）が埋もれていた。
+        if (!enableSegmentation) return;
+
         if (Time.frameCount % 60 == 0)
         {
             var mainTex    = _segMaterial.GetTexture("_MainTex");
