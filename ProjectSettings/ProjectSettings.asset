@@ -525,7 +525,10 @@ PlayerSettings:
       m_Height: 720
       m_Kind: 1
       m_SubKind: 
-  m_BuildTargetBatching: []
+  m_BuildTargetBatching:
+  - m_BuildTarget: Standalone
+    m_StaticBatching: 1
+    m_DynamicBatching: 0
   m_BuildTargetShaderSettings: []
   m_BuildTargetGraphicsJobs: []
   m_BuildTargetGraphicsJobMode: []
@@ -568,8 +571,8 @@ PlayerSettings:
   enableInternalProfiler: 0
   logObjCUncaughtExceptions: 1
   enableCrashReportAPI: 0
-  cameraUsageDescription: 体の動きを検出して花火を打ち上げるためにカメラを使用します。
-  locationUsageDescription:
+  cameraUsageDescription: "\u4F53\u306E\u52D5\u304D\u3092\u691C\u51FA\u3057\u3066\u82B1\u706B\u3092\u6253\u3061\u4E0A\u3052\u308B\u305F\u3081\u306B\u30AB\u30E1\u30E9\u3092\u4F7F\u7528\u3057\u307E\u3059\u3002"
+  locationUsageDescription: 
   microphoneUsageDescription: 
   bluetoothUsageDescription: 
   macOSTargetOSVersion: 12.0
