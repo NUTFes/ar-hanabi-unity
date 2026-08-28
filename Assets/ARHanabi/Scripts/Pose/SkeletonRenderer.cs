@@ -37,6 +37,19 @@ using Mediapipe.Tasks.Components.Containers;
 //   GestureDetector は早期 return するフレームがあり、その人の PoseFeedback が
 //   届かないことがある。_feedback にエントリが無い trackId は Idle として扱う。
 //
+// ── ただし既定ではこの演出は無効にしてある（enableInteractiveFeedback = false）──
+//   運用側から「ボーンの色がインタラクティブに変わるのをやめたい」という要望があったため、
+//   既定で色も太さも「人ごとの基本色 ＋ lineWidth」に完全固定している。
+//   上の3状態の計算コードと関連フィールド（flashColor / chargeColor /
+//   cooldownColorMultiplier など）は一切消していないので、
+//   Inspector で enableInteractiveFeedback を ON に戻せば従来の挙動がそのまま復活する。
+//
+//   PoseEventBus の購読（OnGestureDetected / OnPoseFeedback）も残してある。
+//   _flashUntil と _feedback は更新され続けるが、どちらも辞書への代入だけで、
+//   ResolveFeedbackStyle が基本値を返す限り _appliedStyle の差分スキップが効いて
+//   LineRenderer への代入は一度も走らない。よって描画コストは増えない。
+//   購読を切ってしまうと、トグルを ON に戻したときに配線から直す必要が出てしまう。
+//
 // ── マテリアルを1個に統一した理由 ──
 //   以前は「頂点カラーが効くか分からない」ため、人ごとに Material を1個複製して
 //   _Color / _BaseColor に色を入れていた（最大5個 + OnDestroy での破棄が必要）。
@@ -77,6 +90,12 @@ public class SkeletonRenderer : MonoBehaviour
              "Custom/ParticleUnlit なら色もアルファも頂点カラーで制御できる")]
     [SerializeField] private Material lineMaterial;
 
+    [Tooltip("OFF: 骨格の線を一切描かない。花火を見せることを優先する運用向け。\n" +
+             "機能自体は残してあるので、ONに戻せば従来どおり描画される。\n" +
+             "実行中は ShowSkeleton プロパティ経由で切り替わる\n" +
+             "（CameraCircleMatte が丸い映像の演出中に OFF にし、解除時に元へ戻す）")]
+    [SerializeField] private bool showSkeleton = true;
+
     [Header("感知フラッシュ")]
     [Tooltip("ジェスチャーを感知した瞬間に光らせる色")]
     [SerializeField] private Color flashColor              = new Color(1f, 0.95f, 0.6f, 1f);
@@ -88,6 +107,11 @@ public class SkeletonRenderer : MonoBehaviour
     [SerializeField] private float flashWidthMultiplier    = 3.0f;
 
     [Header("状態フィードバック")]
+    [Tooltip("ON: ジェスチャー状態に応じて線の色と太さを変える（フラッシュ/チャージ/クールダウン）\n" +
+             "OFF: 人ごとの基本色と lineWidth に完全固定する。演出のコードは残してあるので、\n" +
+             "     このトグルを ON に戻せば従来の挙動がそのまま復活する")]
+    [SerializeField] private bool  enableInteractiveFeedback = false;
+
     [Tooltip("ポーズ保持中のチャージ表示を出すか")]
     [SerializeField] private bool  showChargeFeedback      = true;
 
@@ -257,8 +281,45 @@ public class SkeletonRenderer : MonoBehaviour
     }
 
     // ── Public API ──
+
+    /// <summary>
+    /// 骨格の線を描くか。false にすると既存の線も含めて一切表示しない。
+    ///
+    /// 「花火を見せることを優先したい」運用（CameraCircleMatte による丸い映像の演出など）で
+    /// 使う。機能自体は消していないので true に戻せば従来どおり描画される。
+    ///
+    /// コンポーネントの enabled を落とす方式にしなかった理由:
+    /// UpdateSkeleton() は PoseLandmarkDetector からの直接呼び出しなので、
+    /// enabled = false にしても呼ばれ続けてしまい線が消えない。
+    /// </summary>
+    public bool ShowSkeleton
+    {
+        get => showSkeleton;
+        set
+        {
+            if (showSkeleton == value) return;
+            showSkeleton = value;
+
+            // OFF にした瞬間、既に生成済みの線を隠す
+            // （次の UpdateSkeleton を待たずに即座に消えるようにするため）
+            if (!showSkeleton)
+            {
+                foreach (var personIndex in _personLines.Keys)
+                    SetPersonVisible(personIndex, false);
+            }
+        }
+    }
+
     public void UpdateSkeleton(int personIndex, List<NormalizedLandmark> landmarks)
     {
+        if (!showSkeleton)
+        {
+            // 生成済みの線があれば隠しておく（この人が今フレーム初めて現れた場合も含めて、
+            // 表示状態を必ず false 側へ倒す）
+            SetPersonVisible(personIndex, false);
+            return;
+        }
+
         // _connections が参照する最大インデックスは32 → 33点必要
         const int requiredLandmarkCount = 33;
         if (landmarks == null || landmarks.Count < requiredLandmarkCount)
@@ -354,6 +415,11 @@ public class SkeletonRenderer : MonoBehaviour
 
         color = baseColor;
         width = lineWidth;
+
+        // 基本値を入れた直後に抜ける。out 引数は既に初期化済みなので安全に return できるうえ、
+        // 以降のフラッシュ／チャージ／クールダウンの計算をまとめて飛ばせる。
+        // 既定は OFF（= 完全に静的）。理由と復帰方法はファイル冒頭のコメントを参照
+        if (!enableInteractiveFeedback) return;
 
         // ── 感知フラッシュ ──
         if (_flashUntil.TryGetValue(trackId, out float flashUntil))
