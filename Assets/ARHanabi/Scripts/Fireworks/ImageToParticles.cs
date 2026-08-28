@@ -4,8 +4,10 @@ using UnityEngine;
 [System.Serializable]
 public class ImageToParticlesSettings
 {
-    [Tooltip("リサイズ解像度（n×n）。大きいほど細かい")]
-    public int resolution = 64;
+    [Tooltip("リサイズ解像度（n×n）。大きいほど細かい。\n" +
+             "大きすぎると1粒が小さくなりすぎて「絵のスキャン」に見えるので、\n" +
+             "花火らしく粗い粒にしたい場合は 24〜48 あたりを使う")]
+    public int resolution = 32;
 
     [Tooltip("白とみなすRGB閾値（0-255）")]
     [Range(0, 255)]
