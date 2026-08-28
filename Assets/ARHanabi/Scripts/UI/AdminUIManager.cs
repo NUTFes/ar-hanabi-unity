@@ -4,7 +4,6 @@ using UnityEngine.InputSystem;
 using TMPro;
 using System.Collections;
 using System.Collections.Generic;
-using System.IO;
 
 // ===== AdminUIManager =====
 // 管理画面 UI を制御するコンポーネント
@@ -12,7 +11,8 @@ using System.IO;
 // 画面レイアウト（Canvas 上）:
 //   ┌─────────────────────────────────────┐
 //   │  🎆 花火管理                  [閉じる] │
-//   │  [画像を追加] [全変換] [テスト打ち上げ] [更新] │
+//   │  [テスト打ち上げ] [更新] [CAM] [SPACE] │
+//   │  [FRAME] [UFO] [HANABI] [SFX]         │  ← 宇宙モードON中のみ表示
 //   │  ステータステキスト                    │
 //   ├─────────────────────────────────────┤
 //   │  [thumb] 名前.jpg  [変換] [有効] [削除]│  ← エントリ行
@@ -41,17 +41,69 @@ public class AdminUIManager : MonoBehaviour
 {
     // ── Inspector ──
     [Header("Main UI")]
-    [SerializeField] private Button    addImageButton;
-    [SerializeField] private Button    convertAllButton;
     [SerializeField] private Button    testLaunchButton;
     [SerializeField] private Button    closeButton;
+    [Tooltip("2回押すとアプリを終了する。[閉じる]は見た目を隠すだけでアプリは終了しない\n" +
+             "（F1で再表示できるようにするための意図的な設計）ため、\n" +
+             "ビルド後にUnity Editorへ触れない運用ではこのボタンが唯一の終了手段になる")]
+    [SerializeField] private Button    quitButton;
+    [SerializeField] private TextMeshProUGUI quitText;
+    [Tooltip("パネルが閉じている間だけ表示する「開く」ボタン。AdminPanel の外\n" +
+             "（AdminCanvas直下）に置く必要がある。AdminPanel の中に置くと\n" +
+             "CanvasGroup で一緒に消えてしまい、二度と押せなくなるため")]
+    [SerializeField] private Button    openTabButton;
     [SerializeField] private Transform entryListContent;   // ScrollView > Viewport > Content
     [SerializeField] private TextMeshProUGUI statusText;
 
-    [Header("背景除去")]
-    [SerializeField] private UnityEngine.UI.Button segmentationToggleButton;
-    [SerializeField] private TMPro.TextMeshProUGUI  segmentationToggleText;
-    [SerializeField] private SelfieSegmentationController selfieSegmentation;
+    [Header("宇宙モード")]
+    [SerializeField] private Button           spaceModeButton;
+    [SerializeField] private TextMeshProUGUI  spaceModeText;
+    [Tooltip("個別トグル4つの行。宇宙モードOFF中は非表示にする")]
+    [SerializeField] private Transform        spaceToolbar;
+    [SerializeField] private Button           frameToggleButton;
+    [SerializeField] private TextMeshProUGUI  frameToggleText;
+    [SerializeField] private Button           ufoToggleButton;
+    [SerializeField] private TextMeshProUGUI  ufoToggleText;
+    [SerializeField] private Button           hanabiModeButton;
+    [SerializeField] private TextMeshProUGUI  hanabiModeText;
+    [SerializeField] private Button           sfxToggleButton;
+    [SerializeField] private TextMeshProUGUI  sfxToggleText;
+
+    [Header("設定（ジェスチャー感度・花火の出し方）")]
+    [Tooltip("ビルド後にUnity Editorへ触れない前提で、展示中に調整したくなる値を\n" +
+             "ここへ集約している。押すたびにプリセット値を順に切り替える方式\n" +
+             "（宇宙モードのHANABIボタンと同じ操作感）。スライダーではなくボタンに\n" +
+             "したのは、このAdmin UIに既にある「ボタン+ラベル」の部品だけで\n" +
+             "完結させ、新しいUI部品（Slider等）を持ち込まないため")]
+    [SerializeField] private Button           settingsModeButton;
+    [SerializeField] private TextMeshProUGUI  settingsModeText;
+    [Tooltip("感度・花火比率の6ボタンの行。設定モードOFF中は非表示にする")]
+    [SerializeField] private Transform        settingsToolbar;
+    [SerializeField] private Button           handUpButton;
+    [SerializeField] private TextMeshProUGUI  handUpText;
+    [SerializeField] private Button           jumpButton;
+    [SerializeField] private TextMeshProUGUI  jumpText;
+    [SerializeField] private Button           cooldownButton;
+    [SerializeField] private TextMeshProUGUI  cooldownText;
+    [SerializeField] private Button           holdButton;
+    [SerializeField] private TextMeshProUGUI  holdText;
+    [SerializeField] private Button           imgChanceButton;
+    [SerializeField] private TextMeshProUGUI  imgChanceText;
+    [SerializeField] private Button           imgEnableButton;
+    [SerializeField] private TextMeshProUGUI  imgEnableText;
+    [Tooltip("カメラ映像を画面中央の丸に収めて周囲を黒くする演出のON/OFF。\n" +
+             "OFFにすると、カメラのClearFlags・背景Quadのscale・骨格の表示が\n" +
+             "すべて元の値に復元される（現場で「あり/なし」を見比べるためのトグル）")]
+    [SerializeField] private Button           matteButton;
+    [SerializeField] private TextMeshProUGUI  matteText;
+
+    [Header("カメラ")]
+    [Tooltip("押すたびに次のカメラへ循環切替するボタン")]
+    [SerializeField] private Button                     cameraIndexButton;
+    [Tooltip("cameraIndexButton 配下のラベル。index・台数・デバイス名を出す")]
+    [SerializeField] private TextMeshProUGUI            cameraIndexText;
+    [Tooltip("未設定なら Start() でシーンから自動的に探す")]
+    [SerializeField] private CameraBackgroundController cameraBackground;
 
     [Header("API")]
     [Tooltip("DBから新規花火を差分取得する更新ボタン")]
@@ -61,8 +113,11 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private RawImage        previewImage;
     [SerializeField] private TextMeshProUGUI detailText;
 
-    [Header("Test Launch Position")]
-    [SerializeField] private Vector3 testLaunchPosition = new Vector3(0f, 5f, 0f);
+    [Header("テスト打ち上げ")]
+    [Tooltip("未設定なら Start() でシーンから自動的に探す。\n" +
+             "テスト打ち上げは実際のジェスチャーと同じ経路を通すので、\n" +
+             "位置・大きさ・開花音がすべて本番と一致する")]
+    [SerializeField] private FireworkLauncher fireworkLauncher;
 
     [Header("表示制御")]
     [Tooltip("起動時にパネルを表示するか")]
@@ -82,6 +137,13 @@ public class AdminUIManager : MonoBehaviour
     [Tooltip("確認待ち状態の削除ボタンの色（警告色）")]
     [SerializeField] private Color deleteConfirmColor = new Color(0.95f, 0.6f, 0.1f);
 
+    [Header("終了ボタンの2段階確認")]
+    [Tooltip("1回目のクリックから、この秒数内に再クリックされたら実際にアプリを終了する。\n" +
+             "誤タップでキオスクを落とさないための猶予")]
+    [SerializeField] private float quitConfirmSeconds = 3f;
+    [Tooltip("確認待ち状態の終了ボタンの色（警告色）")]
+    [SerializeField] private Color quitConfirmColor = new Color(0.85f, 0.15f, 0.15f);
+
     [Header("ボタンのラベル")]
     [Tooltip("ボタンラベルの自動縮小の下限フォントサイズ")]
     [SerializeField] private float buttonFontSizeMin = 8f;
@@ -93,12 +155,44 @@ public class AdminUIManager : MonoBehaviour
     private const float ButtonHeight   = 36f;
     private const float EntryRowHeight = 64f;   // AdminUIBuilder.EntryRowHeight と一致させる
 
+    // ボタンのラベル色。AdminUIBuilder.ButtonLabelColor と同じ値にすること。
+    // 以前は白だったが、ツールバーのボタンの背景が既定の白のままで
+    // 文字がほぼ読めなかったため、濃紺寄りのダークグレーに統一した
+    private static readonly Color ButtonLabelColor = new Color(0.09f, 0.12f, 0.17f, 1f);
+
     // ── 内部 ──
-    private FireworkManager _manager;
-    private FireworkEntry   _selectedEntry;
-    private CanvasGroup     _canvasGroup;
-    private bool            _isVisible = true;
-    private bool            _isConvertingAll;
+    private FireworkManager     _manager;
+    private FireworkLauncher    _launcher;
+    private SpaceModeController _spaceMode;
+    private GestureDetector     _gesture;
+    private CameraCircleMatte   _matte;
+    private FireworkEntry       _selectedEntry;
+    private CanvasGroup        _canvasGroup;
+    private bool               _isVisible = true;
+
+    // SETTINGS行の開閉。宇宙モードのマスターと違い、この値自体は「効き目」を
+    // 持たない純粋なUI表示切替なので、永続化もしない（次回起動時は閉じた状態でよい）
+    private bool _settingsToolbarVisible = false;
+
+    // 終了ボタンの2段階確認。行ごとの確認待ちを持つ削除ボタンと違い
+    // アプリ全体につき1つしか無いので、行(EntryRow)を介さずここに直接持つ
+    private bool       _quitAwaitingConfirm;
+    private Coroutine  _quitConfirmRoutine;
+    private Image      _quitImage;
+    private Color      _quitNormalColor;
+    private const string QuitNormalLabel = "QUIT";
+
+    // ジェスチャー感度・花火比率のプリセット値。
+    // スライダーではなくボタンで「近い値の次」へ進める方式にしている
+    // （NextPreset 参照）ので、厳密な連続値ではなくこの一覧の中だけを巡回する。
+    // HandUp/Jump に 1.00 を含めているのは、MainScene に既に保存されている値
+    // （handUpThreshold: 1, jumpThreshold: 1）が一覧に無いと、初回クリックで
+    // いきなり一番近いプリセットへ大ジャンプしてしまうため
+    private static readonly float[] HandUpPresets      = { 0.10f, 0.15f, 0.25f, 0.40f, 0.60f, 1.00f };
+    private static readonly float[] JumpPresets        = { 0.03f, 0.06f, 0.10f, 0.15f, 0.25f, 0.40f, 1.00f };
+    private static readonly float[] CooldownPresets    = { 0f, 0.3f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f };
+    private static readonly float[] HoldPresets        = { 0.2f, 0.3f, 0.5f, 0.8f, 1.0f, 1.5f };
+    private static readonly float[] ImageChancePresets = { 0f, 0.25f, 0.5f, 0.75f, 1.0f };
 
     // 行GameObject と FireworkEntry の対応表。
     // 選択ハイライトは全行 Destroy → 再生成ではなく、この表を使って背景色だけ差し替える。
@@ -137,6 +231,87 @@ public class AdminUIManager : MonoBehaviour
         // FireworkManager が無くても表示トグルだけは効くように、先に適用しておく
         ApplyVisible(visibleOnStart);
 
+        // カメラ切替は FireworkManager に依存しないので、早期 return より先に配線する。
+        // cameraBackground は AdminPanel の外（CameraBackground オブジェクト）にあるため
+        // AdminUIBuilder からはアサインできず、ここで自動解決することで
+        // AdminUIBuilder（AdminPanel 配下しか触らない）だけでセットアップが完結するようにしている
+        if (cameraBackground == null)
+            cameraBackground = FindFirstObjectByType<CameraBackgroundController>();
+
+        // テスト打ち上げは FireworkLauncher の経路を使う。
+        // 未アサインでもシーンから拾えるようにしておく（シーン編集を不要にするため）
+        _launcher = fireworkLauncher != null
+                    ? fireworkLauncher
+                    : FindFirstObjectByType<FireworkLauncher>();
+
+        if (_launcher == null)
+            Debug.LogWarning("[AdminUI] FireworkLauncher が見つかりません。テスト打ち上げは無効です");
+
+        cameraIndexButton?.onClick.AddListener(OnCameraIndexClicked);
+        UpdateCameraIndexLabel();
+
+        // 宇宙モードもカメラ切替と同じく FireworkManager に依存しないので、早期 return より先に配線する。
+        // GetOrCreate() はシーンに無ければ自分で生成して返す（null を返さない）ため、
+        // 以降 _spaceMode 自体の null チェックは不要
+        _spaceMode = SpaceModeController.GetOrCreate();
+        spaceModeButton   ?.onClick.AddListener(OnSpaceModeClicked);
+        frameToggleButton ?.onClick.AddListener(OnFrameToggleClicked);
+        ufoToggleButton   ?.onClick.AddListener(OnUfoToggleClicked);
+        hanabiModeButton  ?.onClick.AddListener(OnHanabiModeClicked);
+        sfxToggleButton   ?.onClick.AddListener(OnSfxToggleClicked);
+        UpdateSpaceModeLabel();
+        UpdateFrameToggleLabel();
+        UpdateUfoToggleLabel();
+        UpdateHanabiModeLabel();
+        UpdateSfxToggleLabel();
+        UpdateSpaceToolbarVisibility();
+
+        // 設定パネル（ジェスチャー感度・花火の出し方）も FireworkManager に依存しないので、
+        // 同じ理由で早期 return より先に配線する。
+        // GestureDetector はシーンに1つある前提で自動解決する（AdminPanel の外にあるため
+        // AdminUIBuilder からはアサインできない。cameraBackground と同じ事情）
+        _gesture = FindFirstObjectByType<GestureDetector>();
+        if (_gesture == null)
+            Debug.LogWarning("[AdminUI] GestureDetector が見つかりません。感度調整は無効です");
+
+        settingsModeButton?.onClick.AddListener(OnSettingsModeClicked);
+        handUpButton      ?.onClick.AddListener(OnHandUpClicked);
+        jumpButton        ?.onClick.AddListener(OnJumpClicked);
+        cooldownButton    ?.onClick.AddListener(OnCooldownClicked);
+        holdButton        ?.onClick.AddListener(OnHoldClicked);
+        imgChanceButton   ?.onClick.AddListener(OnImgChanceClicked);
+        imgEnableButton   ?.onClick.AddListener(OnImgEnableClicked);
+        matteButton       ?.onClick.AddListener(OnMatteClicked);
+        UpdateSettingsModeLabel();
+        UpdateHandUpLabel();
+        UpdateJumpLabel();
+        UpdateCooldownLabel();
+        UpdateHoldLabel();
+        UpdateImgChanceLabel();
+        UpdateImgEnableLabel();
+        UpdateMatteLabel();
+        UpdateSettingsToolbarVisibility();
+
+        // 終了ボタンも FireworkManager に依存しないので早期 return より先に配線する。
+        // アプリ全体の終了操作なので、これが機能しない状態は避けたい
+        if (quitButton != null)
+        {
+            _quitImage = quitButton.GetComponent<Image>();
+            if (_quitImage != null) _quitNormalColor = _quitImage.color;
+            quitButton.onClick.AddListener(OnQuitClicked);
+        }
+        if (quitText != null) quitText.text = QuitNormalLabel;
+
+        // 閉じる/開くも FireworkManager に依存しない、パネル自身の表示制御なので
+        // 同じ理由で早期 return より先に配線する
+        // （以前は他のボタン群と一緒に早期 return の後ろにあり、FireworkManager が
+        //  見つからないエラー状態だとパネルを閉じることも開くこともできなかった）
+        closeButton   ?.onClick.AddListener(() => SetVisible(false));
+        openTabButton ?.onClick.AddListener(() => SetVisible(true));
+        // openTabButton の初期表示状態自体は、Start() の先頭で呼んでいる
+        // ApplyVisible(visibleOnStart) で既に決まっている（クリックの配線と
+        // 表示状態の初期化は別物なので、ここで改めて呼び直す必要はない）
+
         _manager = FireworkManager.Instance;
         if (_manager == null)
         {
@@ -145,14 +320,7 @@ public class AdminUIManager : MonoBehaviour
         }
 
         // ボタンイベント
-        addImageButton    ?.onClick.AddListener(OnAddImageClicked);
-        convertAllButton  ?.onClick.AddListener(OnConvertAllClicked);
         testLaunchButton  ?.onClick.AddListener(OnTestLaunchClicked);
-        closeButton       ?.onClick.AddListener(() => SetVisible(false));
-
-        // 背景除去トグル
-        segmentationToggleButton?.onClick.AddListener(OnSegmentationToggleClicked);
-        UpdateSegmentationButtonLabel();
 
         // API 差分取得
         refreshButton?.onClick.AddListener(OnRefreshClicked);
@@ -167,6 +335,7 @@ public class AdminUIManager : MonoBehaviour
     private void Update()
     {
         HealStuckButtons();
+        SyncCameraIndexLabel();
 
         if (!toggleWithF1) return;
 
@@ -192,8 +361,10 @@ public class AdminUIManager : MonoBehaviour
             Debug.LogWarning("[AdminUI] 更新ボタンが無効のまま残っていたので復帰させました");
         }
 
-        if (convertAllButton != null && !convertAllButton.interactable && !_isConvertingAll)
-            convertAllButton.interactable = true;
+        // 切替コルーチンがタイムアウトや例外で死んでもボタンが無効のまま固まらないようにする
+        if (cameraIndexButton != null && !cameraIndexButton.interactable
+            && (cameraBackground == null || !cameraBackground.IsSwitching))
+            cameraIndexButton.interactable = true;
     }
 
     private void OnDestroy()
@@ -217,90 +388,66 @@ public class AdminUIManager : MonoBehaviour
     private void ApplyVisible(bool value)
     {
         _isVisible = value;
-        if (_canvasGroup == null) return;
 
-        // GameObject は落とさない（コルーチンと Update を生かしたまま見た目だけ消す）
-        _canvasGroup.alpha          = value ? 1f : 0f;
-        _canvasGroup.interactable   = value;
-        _canvasGroup.blocksRaycasts = value;
-    }
-
-    // ── ボタンハンドラ ──
-
-    private void OnAddImageClicked()
-    {
-#if UNITY_EDITOR
-        string path = UnityEditor.EditorUtility.OpenFilePanel(
-            "Select Image", "", "jpg,jpeg,png");
-        if (string.IsNullOrEmpty(path)) return;
-        StartCoroutine(LoadImageCoroutine(path));
-#else
-        SetStatus("[WARN] Editor only");
-#endif
-    }
-
-    private IEnumerator LoadImageCoroutine(string path)
-    {
-        SetStatus($"Loading: {Path.GetFileName(path)}");
-        yield return null;  // 1フレーム待ってUIを更新
-
-        byte[] bytes = File.ReadAllBytes(path);
-        var tex = new Texture2D(2, 2);
-        if (!tex.LoadImage(bytes))
+        if (_canvasGroup != null)
         {
-            SetStatus("[ERROR] Load failed");
-            yield break;
+            // GameObject は落とさない（コルーチンと Update を生かしたまま見た目だけ消す）
+            _canvasGroup.alpha          = value ? 1f : 0f;
+            _canvasGroup.interactable   = value;
+            _canvasGroup.blocksRaycasts = value;
         }
 
-        string name = Path.GetFileNameWithoutExtension(path);
-        _manager.AddLocalEntry(name, tex);
-        SetStatus($"[OK] Added: {name}");
+        // パネルが閉じている間だけ「開く」タブを出す。
+        // このタブは AdminPanel の外（AdminCanvas 直下）にあるので、上の
+        // CanvasGroup を通らない。ここで直接 SetActive する
+        // （openTabButton 自身に常駐コンポーネントは無いので、AdminPanel と違い
+        //  SetActive(false) で消しても問題ない）
+        if (openTabButton != null) openTabButton.gameObject.SetActive(!value);
     }
 
-    private void OnConvertAllClicked()
+    // ── テスト打ち上げ ──
+    //
+    // 以前は FireworkManager.LaunchRandom() を直接呼んでいたため、
+    //   ・画像花火しか打たず、エントリが0件だと何も出なかった
+    //   ・位置が testLaunchPosition (0,5,0) 固定で、実際の打ち上げ（z=-5）とは深度が違った
+    //   ・imageScale もシェーダーも設定されず見た目が実際と異なった
+    //   ・開花音が鳴らなかった
+    // という食い違いがあった。今は FireworkLauncher の経路をそのまま使う。
+    private void OnTestLaunchClicked()
     {
-        if (_manager == null) return;
-        if (_isConvertingAll)
+        if (_launcher == null)
         {
-            SetStatus("[WARN] Already converting");
+            SetStatus("[WARN] FireworkLauncher が見つかりません");
             return;
         }
 
-        _isConvertingAll = true;
-        SetConvertAllInteractable(false);
-        SetStatus("Converting...");
-
-        // 変換は重いのでコルーチン版を使う（同期版だと "Converting..." が
-        // 同一フレーム内で上書きされ、画面に一度も出ないまま固まる）。
-        // コルーチンは FireworkManager 側で回す。OnRefreshClicked と同じ理由で、
-        // このパネルが外部から SetActive(false) されても変換が中断しないようにするため。
-        _manager.StartCoroutine(_manager.ConvertAllCoroutine(count =>
-        {
-            _isConvertingAll = false;
-            SetConvertAllInteractable(true);
-            SetStatus($"[OK] Converted {count}");
-        }));
-    }
-
-    private void OnTestLaunchClicked()
-    {
+        // 行が選択されているときは、その画像花火だけをプレビューする
         if (_selectedEntry != null)
         {
             if (!_selectedEntry.isConverted)
             {
-                SetStatus("[WARN] Convert first");
+                SetStatus("[WARN] 先に変換してください");
                 return;
             }
-            FireworkAudioPlayer.Instance?.PlayLaunch();
-            _manager.LaunchEntry(_selectedEntry, testLaunchPosition);
-            SetStatus($"[LAUNCH] {_selectedEntry.displayName}");
+
+            if (_launcher.LaunchTestImage(_selectedEntry))
+                SetStatus($"[LAUNCH] {_selectedEntry.displayName}（選択中の画像花火）");
+            else
+                SetStatus($"[ERROR] 打ち上げに失敗: {_selectedEntry.displayName}");
+            return;
         }
+
+        // 選択が無いときはジェスチャーと同じ判定。
+        // 取ってきた花火があれば抽選、無ければ自動で型花火にフォールバックする
+        int  actives = _launcher.ActiveImageCount;
+        var  kind    = _launcher.LaunchTest(isLarge: true);
+        bool isImage = kind == FireworkAudioPlayer.FireworkKind.Image;
+
+        if (actives == 0)
+            SetStatus("[LAUNCH] 型花火（取ってきた花火が0件）");
         else
-        {
-            FireworkAudioPlayer.Instance?.PlayLaunch();
-            _manager.LaunchRandom(testLaunchPosition);
-            SetStatus("[LAUNCH] Random");
-        }
+            SetStatus($"[LAUNCH] {(isImage ? "画像花火" : "型花火")}" +
+                      $"（ランダム / 取ってきた花火 {actives}件）");
     }
 
     private void OnRefreshClicked()
@@ -333,11 +480,6 @@ public class AdminUIManager : MonoBehaviour
     private void SetRefreshInteractable(bool value)
     {
         if (refreshButton != null) refreshButton.interactable = value;
-    }
-
-    private void SetConvertAllInteractable(bool value)
-    {
-        if (convertAllButton != null) convertAllButton.interactable = value;
     }
 
     // ── エントリ一覧の再描画 ──
@@ -590,6 +732,72 @@ public class AdminUIManager : MonoBehaviour
         row.confirmRoutine = null;
     }
 
+    // ── 終了ボタン（2段階確認）──
+    //
+    // [閉じる] は CanvasGroup で見た目を隠すだけでアプリは終了しない
+    // （F1で再表示できるようにするための意図的な設計）。ビルド後は
+    // Unity Editor に触れない運用が前提のため、アプリ自体を終了する手段が
+    // Alt+F4 しか無いのは運用上わかりにくい、という指摘を受けて追加した。
+    // 削除ボタンと同じ「1回目でタップ待ち状態に、2回目で実行」の型を踏襲している
+    // （誤タップでキオスクをその場で落とさないための猶予）
+    private void OnQuitClicked()
+    {
+        if (!_quitAwaitingConfirm)
+        {
+            BeginQuitConfirm();
+            return;
+        }
+
+        StopQuitConfirmRoutine();
+        Debug.Log("[AdminUI] アプリを終了します（確認済み）");
+
+        // Application.Quit() は Editor の Play モードでは何もしない仕様なので、
+        // Editor 上でも動作確認できるよう isPlaying を落とす経路を分けている
+#if UNITY_EDITOR
+        UnityEditor.EditorApplication.isPlaying = false;
+#else
+        Application.Quit();
+#endif
+    }
+
+    private void BeginQuitConfirm()
+    {
+        _quitAwaitingConfirm = true;
+        if (quitText   != null) quitText.text  = "確認?";
+        if (_quitImage != null) _quitImage.color = quitConfirmColor;
+        SetStatus("[WARN] Tap QUIT again to exit the application");
+
+        StopQuitConfirmRoutine();
+        _quitConfirmRoutine = StartCoroutine(QuitConfirmTimeout());
+    }
+
+    private IEnumerator QuitConfirmTimeout()
+    {
+        float elapsed = 0f;
+        while (elapsed < quitConfirmSeconds)
+        {
+            elapsed += Time.unscaledDeltaTime;
+            yield return null;
+        }
+
+        _quitConfirmRoutine = null;
+        ResetQuitButton();
+    }
+
+    private void ResetQuitButton()
+    {
+        _quitAwaitingConfirm = false;
+        if (quitText   != null) quitText.text  = QuitNormalLabel;
+        if (_quitImage != null) _quitImage.color = _quitNormalColor;
+    }
+
+    private void StopQuitConfirmRoutine()
+    {
+        if (_quitConfirmRoutine == null) return;
+        StopCoroutine(_quitConfirmRoutine);
+        _quitConfirmRoutine = null;
+    }
+
     // ── ステータスラベルだけを更新 ──
     private void RefreshRowStatus(TextMeshProUGUI label, FireworkEntry entry)
     {
@@ -658,7 +866,10 @@ public class AdminUIManager : MonoBehaviour
         var tmp     = textGO.AddComponent<TextMeshProUGUI>();
         tmp.text      = label;
         tmp.alignment = TextAlignmentOptions.Center;
-        tmp.color     = Color.white;
+        // ツールバーのボタンと同じ濃紺寄りのダークグレーに揃える。
+        // 値は AdminUIBuilder.ButtonLabelColor と一致させること
+        //（片方だけ変えると一覧の行とツールバーで文字色が混在する）
+        tmp.color     = ButtonLabelColor;
 
         // 溢れ対策: 1行維持したままフォントを自動縮小する
         tmp.textWrappingMode = TextWrappingModes.NoWrap;
@@ -678,29 +889,340 @@ public class AdminUIManager : MonoBehaviour
         return MakeButton(parent, label, bgColor, onClick, out _, minWidth);
     }
 
-    // ── セグメンテーション ON/OFF ──
+    // ── 宇宙モード ──
+    //
+    // マスターON/OFFは「個別トグルの設定はそのまま、効き目だけを止める」ためのもの
+    // （SpaceModeController 側の Setting/Enabled 分離を参照）。
+    // ラベルには常に個別設定値（*Setting）を出す。実効値（*Enabled）を出すと、
+    // マスターOFF中は4つとも [OFF] に見えてしまい、個別トグルが勝手にリセット
+    // されたかのように誤解される（実際はマスターを戻せば元の組み合わせに戻る）ため。
 
-    private void OnSegmentationToggleClicked()
+    private void OnSpaceModeClicked()
     {
-        if (selfieSegmentation == null) return;
-        selfieSegmentation.SetEnabled(!selfieSegmentation.IsEnabled);
-        UpdateSegmentationButtonLabel();
-        Debug.Log($"[AdminUI] Segmentation: {(selfieSegmentation.IsEnabled ? "ON" : "OFF")}");
+        if (_spaceMode == null) return;
+        _spaceMode.ToggleMaster();
+        UpdateSpaceModeLabel();
+        UpdateSpaceToolbarVisibility();
+        Debug.Log($"[AdminUI] SpaceMode: {(_spaceMode.MasterEnabled ? "ON" : "OFF")}");
     }
 
-    private void UpdateSegmentationButtonLabel()
+    private void UpdateSpaceModeLabel()
     {
-        if (segmentationToggleText == null) return;
+        if (spaceModeText == null) return;
+        spaceModeText.text = _spaceMode != null && _spaceMode.MasterEnabled ? "SPACE [ON]" : "SPACE [OFF]";
+    }
 
-        if (selfieSegmentation == null)
+    // 宇宙モードOFF中は4つの個別トグル行を隠す。
+    // spaceToolbar の親（AdminPanel）の VerticalLayoutGroup は非アクティブな子を
+    // 自動でスキップしてリフローするので、SetActive を切り替えるだけで見た目が崩れない
+    // （Destroy → 再生成にすると設定値やアサインが失われるので避ける）
+    private void UpdateSpaceToolbarVisibility()
+    {
+        if (spaceToolbar == null) return;
+        spaceToolbar.gameObject.SetActive(_spaceMode != null && _spaceMode.MasterEnabled);
+    }
+
+    private void OnFrameToggleClicked()
+    {
+        if (_spaceMode == null) return;
+        _spaceMode.ToggleFrame();
+        UpdateFrameToggleLabel();
+    }
+
+    private void UpdateFrameToggleLabel()
+    {
+        if (frameToggleText == null) return;
+        frameToggleText.text = _spaceMode != null && _spaceMode.FrameSetting ? "FRAME [ON]" : "FRAME [OFF]";
+    }
+
+    private void OnUfoToggleClicked()
+    {
+        if (_spaceMode == null) return;
+        _spaceMode.ToggleUfo();
+        UpdateUfoToggleLabel();
+    }
+
+    private void UpdateUfoToggleLabel()
+    {
+        if (ufoToggleText == null) return;
+        ufoToggleText.text = _spaceMode != null && _spaceMode.UfoSetting ? "UFO [ON]" : "UFO [OFF]";
+    }
+
+    private void OnHanabiModeClicked()
+    {
+        if (_spaceMode == null) return;
+        _spaceMode.CycleFireworkMode();
+        UpdateHanabiModeLabel();
+    }
+
+    private void UpdateHanabiModeLabel()
+    {
+        if (hanabiModeText == null) return;
+        if (_spaceMode == null)
         {
-            segmentationToggleText.text = "BG Remove [N/A]";
+            hanabiModeText.text = "HANABI [N/A]";
             return;
         }
 
-        segmentationToggleText.text = selfieSegmentation.IsEnabled
-            ? "BG Remove [ON]"
-            : "BG Remove [OFF]";
+        hanabiModeText.text = _spaceMode.FireworkSetting switch
+        {
+            SpaceModeController.SpaceFireworkMode.Mix       => "HANABI [MIX]",
+            SpaceModeController.SpaceFireworkMode.SpaceOnly => "HANABI [SPACE]",
+            _                                                => "HANABI [OFF]",
+        };
+    }
+
+    private void OnSfxToggleClicked()
+    {
+        if (_spaceMode == null) return;
+        _spaceMode.ToggleSpaceAudio();
+        UpdateSfxToggleLabel();
+    }
+
+    private void UpdateSfxToggleLabel()
+    {
+        if (sfxToggleText == null) return;
+        sfxToggleText.text = _spaceMode != null && _spaceMode.SpaceAudioSetting ? "SFX [ON]" : "SFX [OFF]";
+    }
+
+    // ── 設定（ジェスチャー感度・花火の出し方）──
+    //
+    // ビルド後は Unity Editor に一切触れない運用を前提にしたパネル。
+    // 会場・客層・投稿写真の状況で変えたくなる値をここに集約している。
+    // SETTINGSボタンで行の開閉だけを切り替える（宇宙モードの SpaceToolbar と
+    // 同じ考え方だが、こちらは「効き目」を持たない純粋な表示トグルなので
+    // 永続化はしない）。個々の値自体（ジェスチャー感度・花火比率）は
+    // GestureDetector / FireworkLauncher 側で PlayerPrefs に永続化される
+
+    private void OnSettingsModeClicked()
+    {
+        _settingsToolbarVisible = !_settingsToolbarVisible;
+        UpdateSettingsModeLabel();
+        UpdateSettingsToolbarVisibility();
+    }
+
+    private void UpdateSettingsModeLabel()
+    {
+        if (settingsModeText == null) return;
+        settingsModeText.text = _settingsToolbarVisible ? "SETTINGS [ON]" : "SETTINGS [OFF]";
+    }
+
+    private void UpdateSettingsToolbarVisibility()
+    {
+        if (settingsToolbar == null) return;
+        settingsToolbar.gameObject.SetActive(_settingsToolbarVisible);
+    }
+
+    // 現在値に一番近いプリセットの「次」を返す（末尾なら先頭へ戻る）。
+    // 完全一致を要求しないのは、PlayerPrefs 経由で復元された値や Inspector で
+    // 直接入れた値がプリセット外でも、そこから自然に巡回を始められるようにするため
+    private static float NextPreset(float[] presets, float current)
+    {
+        int nearest = 0;
+        float bestDiff = float.MaxValue;
+        for (int i = 0; i < presets.Length; i++)
+        {
+            float diff = Mathf.Abs(presets[i] - current);
+            if (diff < bestDiff) { bestDiff = diff; nearest = i; }
+        }
+        return presets[(nearest + 1) % presets.Length];
+    }
+
+    private void OnHandUpClicked()
+    {
+        if (_gesture == null) return;
+        _gesture.HandUpThreshold = NextPreset(HandUpPresets, _gesture.HandUpThreshold);
+        UpdateHandUpLabel();
+    }
+
+    private void UpdateHandUpLabel()
+    {
+        if (handUpText == null) return;
+        handUpText.text = _gesture != null ? $"HAND [{_gesture.HandUpThreshold:F2}]" : "HAND [N/A]";
+    }
+
+    private void OnJumpClicked()
+    {
+        if (_gesture == null) return;
+        _gesture.JumpThreshold = NextPreset(JumpPresets, _gesture.JumpThreshold);
+        UpdateJumpLabel();
+    }
+
+    private void UpdateJumpLabel()
+    {
+        if (jumpText == null) return;
+        jumpText.text = _gesture != null ? $"JUMP [{_gesture.JumpThreshold:F2}]" : "JUMP [N/A]";
+    }
+
+    private void OnCooldownClicked()
+    {
+        if (_gesture == null) return;
+        _gesture.GestureCooldown = NextPreset(CooldownPresets, _gesture.GestureCooldown);
+        UpdateCooldownLabel();
+    }
+
+    private void UpdateCooldownLabel()
+    {
+        if (cooldownText == null) return;
+        cooldownText.text = _gesture != null ? $"COOLDOWN [{_gesture.GestureCooldown:F1}s]" : "COOLDOWN [N/A]";
+    }
+
+    private void OnHoldClicked()
+    {
+        if (_gesture == null) return;
+        _gesture.PoseHoldDuration = NextPreset(HoldPresets, _gesture.PoseHoldDuration);
+        UpdateHoldLabel();
+    }
+
+    private void UpdateHoldLabel()
+    {
+        if (holdText == null) return;
+        holdText.text = _gesture != null ? $"HOLD [{_gesture.PoseHoldDuration:F1}s]" : "HOLD [N/A]";
+    }
+
+    private void OnImgChanceClicked()
+    {
+        if (_launcher == null) return;
+        _launcher.ImageFireworkChance = NextPreset(ImageChancePresets, _launcher.ImageFireworkChance);
+        UpdateImgChanceLabel();
+    }
+
+    private void UpdateImgChanceLabel()
+    {
+        if (imgChanceText == null) return;
+        imgChanceText.text = _launcher != null
+            ? $"IMG% [{Mathf.RoundToInt(_launcher.ImageFireworkChance * 100)}]"
+            : "IMG% [N/A]";
+    }
+
+    // 比率スライダーと違い、こちらは即座に「画像花火を一切出さない」緊急スイッチ。
+    // API/投稿写真パイプラインが壊れたときに、比率を0にするより速く・確実に止められる
+    private void OnImgEnableClicked()
+    {
+        if (_launcher == null) return;
+        _launcher.EnableImageFirework = !_launcher.EnableImageFirework;
+        UpdateImgEnableLabel();
+    }
+
+    private void UpdateImgEnableLabel()
+    {
+        if (imgEnableText == null) return;
+        imgEnableText.text = _launcher != null
+            ? (_launcher.EnableImageFirework ? "IMG [ON]" : "IMG [OFF]")
+            : "IMG [N/A]";
+    }
+
+    // カメラ映像を画面中央の丸に収める演出のトグル。
+    //
+    // CameraCircleMatte は Main Camera へ自動アタッチされるので、ここでは
+    // 見つけて叩くだけ。OFF にすると同コンポーネントが控えておいた元の値
+    // （カメラのClearFlags・背景Quadのscale・骨格の表示）をすべて復元するので、
+    // ビルドし直さずに現場で「あり/なし」を見比べられる
+    private void OnMatteClicked()
+    {
+        var matte = ResolveMatte();
+        if (matte == null)
+        {
+            SetStatus("[WARN] CameraCircleMatte が見つかりません");
+            return;
+        }
+
+        matte.MatteEnabled = !matte.MatteEnabled;
+        UpdateMatteLabel();
+        Debug.Log($"[AdminUI] CircleMatte: {(matte.MatteEnabled ? "ON" : "OFF")}");
+    }
+
+    private void UpdateMatteLabel()
+    {
+        if (matteText == null) return;
+
+        var matte = ResolveMatte();
+        matteText.text = matte != null
+            ? (matte.MatteEnabled ? "MATTE [ON]" : "MATTE [OFF]")
+            : "MATTE [N/A]";
+    }
+
+    // Main Camera への自動アタッチは AfterSceneLoad で走るので、AdminUIManager.Start()
+    // の時点では間に合っていない可能性がある。毎回探し直して見つかった時点でキャッシュする
+    private CameraCircleMatte ResolveMatte()
+    {
+        if (_matte == null) _matte = FindFirstObjectByType<CameraCircleMatte>();
+        return _matte;
+    }
+
+    // ── カメラ Index の循環切替 ──
+    //
+    // 展示現場では「どの index がどのカメラか」が現地に行くまで分からない。
+    // 以前は Unity に戻って Inspector の webcamIndex を直して再生し直すしか
+    // 手が無かったので、ここから総当たりできるようにしている。
+    // 選んだ index は保存しない（起動ごとに Inspector の値から始まる）。
+
+    private void OnCameraIndexClicked()
+    {
+        if (cameraBackground == null)
+        {
+            SetStatus("[WARN] CameraBackgroundController が見つかりません");
+            return;
+        }
+
+        if (cameraBackground.IsSwitching)
+        {
+            SetStatus("[WARN] カメラ切替中です");
+            return;
+        }
+
+        cameraBackground.CycleNextCamera();
+
+        // 切替はコルーチンなので、この時点のラベルはまだ確定値ではない。
+        // 確定値は SyncCameraIndexLabel() が次のフレーム以降に反映する
+        UpdateCameraIndexLabel();
+        SetStatus($"カメラ切替: {CameraLabelText()}");
+    }
+
+    // 切替が非同期に完了するため、毎フレーム実際の状態と突き合わせる。
+    // ただし比較に使うのは int と bool だけ。ラベル文字列を毎フレーム組み立てると
+    // 1フレーム1個の string を無条件に捨てることになるので、
+    // 「表示の元になる値が変わったフレーム」でしか文字列を作らない
+    // （TMP.text への代入も同じ理由で最小限にする）。
+    private int  _shownCameraIndex     = int.MinValue;
+    private int  _shownCameraCount     = int.MinValue;
+    private bool _shownCameraSwitching;
+
+    private void SyncCameraIndexLabel()
+    {
+        if (cameraIndexText == null) return;
+
+        int  index     = cameraBackground != null ? cameraBackground.CurrentIndex  : -1;
+        int  count     = cameraBackground != null ? cameraBackground.DeviceCount   : -1;
+        bool switching = cameraBackground != null && cameraBackground.IsSwitching;
+
+        if (index == _shownCameraIndex
+            && count == _shownCameraCount
+            && switching == _shownCameraSwitching) return;
+
+        UpdateCameraIndexLabel();
+    }
+
+    private void UpdateCameraIndexLabel()
+    {
+        if (cameraIndexText == null) return;
+
+        _shownCameraIndex     = cameraBackground != null ? cameraBackground.CurrentIndex : -1;
+        _shownCameraCount     = cameraBackground != null ? cameraBackground.DeviceCount  : -1;
+        _shownCameraSwitching = cameraBackground != null && cameraBackground.IsSwitching;
+
+        cameraIndexText.text = CameraLabelText();
+    }
+
+    // 例: "CAM [2/4] HD Webcam"。切替中は index の代わりに "..." を出す
+    private string CameraLabelText()
+    {
+        if (cameraBackground == null) return "CAM [N/A]";
+
+        if (cameraBackground.IsSwitching) return "CAM [...] 切替中";
+
+        return $"CAM [{cameraBackground.CurrentIndex}/{cameraBackground.DeviceCount}] " +
+               $"{cameraBackground.CurrentDeviceName}";
     }
 
     private void SetStatus(string msg)

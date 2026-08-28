@@ -31,6 +31,47 @@ public class GestureDetector : MonoBehaviour
     [Tooltip("ポーズを何秒維持したら発射するか")]
     [SerializeField] private float poseHoldDuration   = 0.5f;
 
+    // ── 永続化 ──
+    // 会場・客層で毎回変えたくなる値なので、Admin画面（SETTINGS）から調整できる。
+    // 展示は複数セッション・複数日にまたがって電源を落とすため、調整した値は
+    // PlayerPrefs 経由で次回起動時にも引き継ぐ（SettingsStore 参照）。
+    // キーが無い＝一度も Admin 画面から触っていない場合は、Inspector/シーンに
+    // 保存されている値（= このフィールドの現在値）がそのまま使われる
+    private void Awake()
+    {
+        handUpThreshold  = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(handUpThreshold)}",  handUpThreshold);
+        jumpThreshold    = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(jumpThreshold)}",    jumpThreshold);
+        gestureCooldown  = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(gestureCooldown)}",  gestureCooldown);
+        poseHoldDuration = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(poseHoldDuration)}", poseHoldDuration);
+    }
+
+    // ── Admin画面（SETTINGS）からの調整用 ──
+    // set のたびに PlayerPrefs へ保存する。頻繁に呼ばれる値ではない
+    // （ボタンクリック時のみ）ので、毎回 Save() を呼ぶコストは無視できる
+    public float HandUpThreshold
+    {
+        get => handUpThreshold;
+        set { handUpThreshold = value; SettingsStore.SetFloat($"{nameof(GestureDetector)}.{nameof(handUpThreshold)}", value); }
+    }
+
+    public float JumpThreshold
+    {
+        get => jumpThreshold;
+        set { jumpThreshold = value; SettingsStore.SetFloat($"{nameof(GestureDetector)}.{nameof(jumpThreshold)}", value); }
+    }
+
+    public float GestureCooldown
+    {
+        get => gestureCooldown;
+        set { gestureCooldown = value; SettingsStore.SetFloat($"{nameof(GestureDetector)}.{nameof(gestureCooldown)}", value); }
+    }
+
+    public float PoseHoldDuration
+    {
+        get => poseHoldDuration;
+        set { poseHoldDuration = value; SettingsStore.SetFloat($"{nameof(GestureDetector)}.{nameof(poseHoldDuration)}", value); }
+    }
+
     // ── 人ごとの判定状態 ──
     private class PersonState
     {
