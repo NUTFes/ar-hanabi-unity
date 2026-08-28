@@ -248,9 +248,20 @@ public class FireworkManager : MonoBehaviour
     public List<FireworkEntry> GetActiveEntries() =>
         _entries.Where(e => e.isActive && e.isConverted).ToList();
 
+    // ── 以下2つは FireworkLauncher を経由しない低レベルAPI ──
+    //
+    // 【注意】ユーザーに見せる打ち上げには使わないこと。
+    //   FireworkLauncher が設定する imageScale（視錐台から計算する画面占有率）、
+    //   scatterMode、シェーダーの注入をどれも行わないため、
+    //   実際の打ち上げとは大きさも見た目も違う花火が出る。
+    //   さらに開花音も鳴らない。
+    //   実際にこれが原因で、Admin画面のテスト打ち上げが本番と食い違っていた。
+    //
+    //   打ち上げには FireworkLauncher.LaunchTest() / LaunchTestImage() を使う。
+    //   ここは動作確認用の最小経路として残してある。
+
     /// <summary>
-    /// ランダムに1件打ち上げる
-    /// FireworkLauncher から GestureType に応じて呼ばれる
+    /// ランダムに1件打ち上げる（低レベル。FireworkLauncher の設定は適用されない）
     /// </summary>
     public void LaunchRandom(Vector3 worldPosition)
     {
@@ -264,7 +275,7 @@ public class FireworkManager : MonoBehaviour
         LaunchEntry(entry, worldPosition);
     }
 
-    /// <summary>特定エントリを打ち上げる</summary>
+    /// <summary>特定エントリを打ち上げる（低レベル。FireworkLauncher の設定は適用されない）</summary>
     public void LaunchEntry(FireworkEntry entry, Vector3 worldPosition)
     {
         if (!entry.isConverted)
