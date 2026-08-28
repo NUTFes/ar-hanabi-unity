@@ -63,10 +63,35 @@ public class DisplayActivator : MonoBehaviour
     }
 
     // ── 1台構成へのフォールバック ──
+    //
+    // ── depth も一緒に直す理由（実際にここで踏んだ不具合）──
+    //   MainScene は Main Camera（花火。depth -1）と Admin Camera（UI用。depth 0、
+    //   cullingMask 0 なので自身は何も描かない）が別々の Display（1 / 0）にいる
+    //   前提で depth が振られている。1台構成でどちらも Display 0 へ合流させると、
+    //   同じ Display 内では depth の大きいカメラが後から描画される＝画面に残る
+    //   ため、Admin Camera（depth 0）が Main Camera（depth -1）より後に描画される。
+    //   Admin Camera は cullingMask が 0 で何も描かないが、ClearFlags が
+    //   Skybox のままだとその「何も描かない描画」の前にフレームバッファを
+    //   クリアしてしまい、直前に Main Camera が描いた花火をまるごと消してしまう。
+    //   実機テストで「Admin 側しか表示されない」という形でこれが再現した。
+    //
+    //   直したのは「見た目」ではなく「奥行きの前後関係」。移動してきたカメラを
+    //   常に Display 0 の既存カメラより後ろ（大きい depth）に置けば、
+    //   ClearFlags が何であっても最後に描いたカメラの絵が残る。
+    //   cullingMask で判定せず depth だけで揃えているのは、将来 Display 0 に
+    //   カメラが増えても同じロジックで安全になるようにするため。
     private void FallbackCamerasToPrimaryDisplay()
     {
         // Camera.allCameras は非アクティブなカメラを含まないので使わない
         var cameras = FindObjectsByType<Camera>(FindObjectsInactive.Include, FindObjectsSortMode.None);
+
+        // 既に Display 0 にいるカメラ（Admin Camera 等）の depth の最大値を先に控えておく
+        float maxExistingDepth = float.NegativeInfinity;
+        foreach (var cam in cameras)
+        {
+            if (cam == null || cam.targetDisplay != 0) continue;
+            if (cam.depth > maxExistingDepth) maxExistingDepth = cam.depth;
+        }
 
         int moved = 0;
         foreach (var cam in cameras)
@@ -75,6 +100,17 @@ public class DisplayActivator : MonoBehaviour
 
             int from = cam.targetDisplay;
             cam.targetDisplay = 0;
+
+            // 合流先に既存カメラがいて、かつ移動してきたカメラの depth がそれ以下なら、
+            // 必ず後に描画されるよう depth を引き上げる
+            if (!float.IsNegativeInfinity(maxExistingDepth) && cam.depth <= maxExistingDepth)
+            {
+                float oldDepth = cam.depth;
+                cam.depth = maxExistingDepth + 1f;
+                Debug.LogWarning($"[Display] '{cam.name}' の depth を {oldDepth} → {cam.depth} に" +
+                                 "引き上げました（Display 0 に合流した既存カメラより後に描画されるように）");
+            }
+
             moved++;
 
             Debug.LogWarning($"[Display] Only 1 display detected: switched camera '{cam.name}' " +
