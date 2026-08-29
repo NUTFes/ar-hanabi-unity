@@ -9,16 +9,20 @@ using System.Collections.Generic;
 // 管理画面 UI を制御するコンポーネント
 //
 // 画面レイアウト（Canvas 上）:
-//   ┌─────────────────────────────────────┐
-//   │  🎆 花火管理                  [閉じる] │
-//   │  [テスト打ち上げ] [更新] [CAM] [SPACE] │
-//   │  [FRAME] [UFO] [HANABI] [SFX]         │  ← 宇宙モードON中のみ表示
-//   │  ステータステキスト                    │
-//   ├─────────────────────────────────────┤
-//   │  [thumb] 名前.jpg  [変換] [有効] [削除]│  ← エントリ行
-//   │  [thumb] 名前2.jpg [変換] [有効] [削除]│
-//   │  ...                                  │
-//   └─────────────────────────────────────┘
+//   ┌──────────────────────────────────────────────────────┐
+//   │  🎆 花火管理                          [QUIT] [閉じる] │
+//   │  [テスト打ち上げ] [更新] [CAM] [SPACE] [SETTINGS]     │
+//   │  [FRAME] [UFO] [HANABI] [SFX]                        │ ← 宇宙モードON中のみ
+//   │  [HAND] [JUMP] [COOLDOWN] [HOLD]                     │ ← SETTINGS ON中のみ
+//   │  [IMG%] [IMG] [MATTE] [PERSON]                       │
+//   │  ステータステキスト                                   │
+//   ├──────────────────────────────────────────────────────┤
+//   │  [thumb] 名前.jpg  [有効] [選択]                      │ ← エントリ行
+//   │  [thumb] 名前2.jpg [有効] [選択]                      │
+//   │  ...                                                 │
+//   └──────────────────────────────────────────────────────┘
+//   ※ パネルを閉じている間は画面左上に [OPEN] タブが出る
+//      （AdminPanel の外に置いてあるので CanvasGroup で一緒に消えない）
 //
 // セットアップ手順:
 //   1. Hierarchy: Canvas > AdminPanel を作成
@@ -96,6 +100,11 @@ public class AdminUIManager : MonoBehaviour
              "すべて元の値に復元される（現場で「あり/なし」を見比べるためのトグル）")]
     [SerializeField] private Button           matteButton;
     [SerializeField] private TextMeshProUGUI  matteText;
+    [Tooltip("人として検出するのに必要な確信度。上げると人型のポスターや人形などの\n" +
+             "誤検知が減るが、遠い人・暗い場所の人を拾わなくなる。\n" +
+             "押すたびに MediaPipe の PoseLandmarker を作り直す（数十ms）")]
+    [SerializeField] private Button           personConfButton;
+    [SerializeField] private TextMeshProUGUI  personConfText;
 
     [Header("カメラ")]
     [Tooltip("押すたびに次のカメラへ循環切替するボタン")]
@@ -131,12 +140,6 @@ public class AdminUIManager : MonoBehaviour
     [Tooltip("選択中の行の背景色（ハイライト）")]
     [SerializeField] private Color rowSelectedColor = new Color(0.35f, 0.55f, 0.95f, 0.35f);
 
-    [Header("削除の2段階確認")]
-    [Tooltip("1回目のクリックから、この秒数内に再クリックされたら実際に削除する")]
-    [SerializeField] private float deleteConfirmSeconds = 3f;
-    [Tooltip("確認待ち状態の削除ボタンの色（警告色）")]
-    [SerializeField] private Color deleteConfirmColor = new Color(0.95f, 0.6f, 0.1f);
-
     [Header("終了ボタンの2段階確認")]
     [Tooltip("1回目のクリックから、この秒数内に再クリックされたら実際にアプリを終了する。\n" +
              "誤タップでキオスクを落とさないための猶予")]
@@ -166,6 +169,7 @@ public class AdminUIManager : MonoBehaviour
     private SpaceModeController _spaceMode;
     private GestureDetector     _gesture;
     private CameraCircleMatte   _matte;
+    private PoseLandmarkDetector _poseDetector;
     private FireworkEntry       _selectedEntry;
     private CanvasGroup        _canvasGroup;
     private bool               _isVisible = true;
@@ -188,8 +192,18 @@ public class AdminUIManager : MonoBehaviour
     // HandUp/Jump に 1.00 を含めているのは、MainScene に既に保存されている値
     // （handUpThreshold: 1, jumpThreshold: 1）が一覧に無いと、初回クリックで
     // いきなり一番近いプリセットへ大ジャンプしてしまうため
-    private static readonly float[] HandUpPresets      = { 0.10f, 0.15f, 0.25f, 0.40f, 0.60f, 1.00f };
-    private static readonly float[] JumpPresets        = { 0.03f, 0.06f, 0.10f, 0.15f, 0.25f, 0.40f, 1.00f };
+    // ── 1.0 より上まで用意している理由 ──
+    //   閾値は「肩幅に対する相対値」で、1.0 = 肩幅ぶん手を上げる、という意味。
+    //   上限が 1.0 だと「肩幅ぶん上げれば発火」までしか厳しくできず、
+    //   人が密集して腕が写り込む展示では誤発火が止められなかった。
+    //   1.0 を超える値は「肩幅の1.5倍・2倍まで上げないと発火しない」を意味し、
+    //   物理的に到達可能（万歳すれば手は肩から肩幅2倍ほど上がる）なので実用範囲。
+    private static readonly float[] HandUpPresets      = { 0.10f, 0.15f, 0.25f, 0.40f, 0.60f, 1.00f, 1.50f, 2.00f, 2.50f };
+    private static readonly float[] JumpPresets        = { 0.03f, 0.06f, 0.10f, 0.15f, 0.25f, 0.40f, 1.00f, 1.50f, 2.00f };
+
+    // 人として検出するのに必要な確信度。MediaPipe の既定は 0.5。
+    // 上げるほど誤検知が減るが、遠い人や見切れている人を拾わなくなる
+    private static readonly float[] PersonConfPresets  = { 0.30f, 0.40f, 0.50f, 0.60f, 0.70f, 0.80f, 0.90f };
     private static readonly float[] CooldownPresets    = { 0f, 0.3f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f };
     private static readonly float[] HoldPresets        = { 0.2f, 0.3f, 0.5f, 0.8f, 1.0f, 1.5f };
     private static readonly float[] ImageChancePresets = { 0f, 0.25f, 0.5f, 0.75f, 1.0f };
@@ -204,12 +218,8 @@ public class AdminUIManager : MonoBehaviour
         public FireworkEntry   entry;
         public GameObject      rowGO;
         public Image           background;
-        public Image           deleteImage;
-        public TextMeshProUGUI deleteLabel;
-        public Color           deleteNormalColor;
-        public string          deleteNormalLabel;
-        public Coroutine       confirmRoutine;   // 確認待ちタイマー（AdminUIManager 側で回す）
-        public bool            awaitingConfirm;
+        // 削除ボタン用の参照（deleteImage / confirmRoutine など）は、
+        // [削除] ボタンごと廃止したので持っていない
     }
 
     // ── ライフサイクル ──
@@ -282,6 +292,14 @@ public class AdminUIManager : MonoBehaviour
         imgChanceButton   ?.onClick.AddListener(OnImgChanceClicked);
         imgEnableButton   ?.onClick.AddListener(OnImgEnableClicked);
         matteButton       ?.onClick.AddListener(OnMatteClicked);
+        personConfButton  ?.onClick.AddListener(OnPersonConfClicked);
+
+        // 人の検出閾値は PoseLandmarkDetector が持つ。GestureDetector と同じく
+        // AdminPanel の外にあるのでシーンから自動解決する
+        _poseDetector = FindFirstObjectByType<PoseLandmarkDetector>();
+        if (_poseDetector == null)
+            Debug.LogWarning("[AdminUI] PoseLandmarkDetector が見つかりません。人の検出閾値の調整は無効です");
+
         UpdateSettingsModeLabel();
         UpdateHandUpLabel();
         UpdateJumpLabel();
@@ -290,6 +308,7 @@ public class AdminUIManager : MonoBehaviour
         UpdateImgChanceLabel();
         UpdateImgEnableLabel();
         UpdateMatteLabel();
+        UpdatePersonConfLabel();
         UpdateSettingsToolbarVisibility();
 
         // 終了ボタンも FireworkManager に依存しないので早期 return より先に配線する。
@@ -485,11 +504,10 @@ public class AdminUIManager : MonoBehaviour
     // ── エントリ一覧の再描画 ──
     public void RefreshList()
     {
-        // 既存行を削除（確認待ちタイマーも止める）
+        // 既存行を削除
         foreach (var row in _rows)
         {
             if (row == null) continue;
-            StopConfirmRoutine(row);
             if (row.rowGO != null) Destroy(row.rowGO);
         }
         _rows.Clear();
@@ -618,13 +636,13 @@ public class AdminUIManager : MonoBehaviour
         var statLbl  = MakeChild<TextMeshProUGUI>(rowGO.transform, "Status", new Vector2(120f, 0f));
         RefreshRowStatus(statLbl, entry);
 
-        // [変換] ボタン
-        MakeButton(rowGO.transform, "Convert", new Color(0.2f, 0.5f, 0.9f), () =>
-        {
-            _manager.ConvertEntry(entry);
-            RefreshRowStatus(statLbl, entry);
-            SetStatus($"[OK] Converted: {entry.displayName}");
-        });
+        // ── [変換] と [削除] を置かない理由 ──
+        //   変換: APIから取得した時点で FireworkManager が ConvertEntry と SetActive まで
+        //         済ませている（FetchNewEntriesFromApi 参照）ので、手で押す場面が無い。
+        //   削除: 運用上そもそも消さないと決まったため。
+        //         誤タップで取得済みの花火を失う事故のほうが実害が大きい。
+        //   どちらも FireworkManager 側の API（ConvertEntry / RemoveEntry）は
+        //   残してあるので、必要になればボタンを戻すだけでよい。
 
         // [有効/無効] トグル
         TextMeshProUGUI activeLabel = null;
@@ -640,97 +658,14 @@ public class AdminUIManager : MonoBehaviour
         MakeButton(rowGO.transform, "Select", new Color(0.6f, 0.4f, 0.8f),
             () => SelectEntry(entry));
 
-        // [削除] ボタン（2段階確認。1回目で「確認?」、時間切れで元に戻る）
-        var deleteColor = new Color(0.8f, 0.2f, 0.2f);
-        var delBtn = MakeButton(rowGO.transform, "✕", deleteColor,
-            () => OnDeleteClicked(row), out var delLabel);
-        row.deleteImage       = delBtn.image;
-        row.deleteLabel       = delLabel;
-        row.deleteNormalColor = deleteColor;
-        row.deleteNormalLabel = "✕";
-
         return row;
     }
 
-    // ── 削除の2段階確認 ──
-
-    private void OnDeleteClicked(EntryRow row)
-    {
-        if (row == null || row.entry == null || _manager == null) return;
-
-        if (!row.awaitingConfirm)
-        {
-            BeginDeleteConfirm(row);
-            return;
-        }
-
-        // 2回目のクリック → 実際に削除
-        StopConfirmRoutine(row);
-        row.awaitingConfirm = false;
-
-        var entry = row.entry;
-        if (_selectedEntry == entry) ClearSelection();
-
-        SetStatus($"[OK] Removed: {entry.displayName}");
-        _manager.RemoveEntry(entry);   // → OnEntriesChanged → RefreshList で行が作り直される
-    }
-
-    private void BeginDeleteConfirm(EntryRow row)
-    {
-        // 他の行の確認待ちは畳んでおく（誤タップの取り違えを防ぐ）
-        foreach (var other in _rows)
-        {
-            if (other == null || other == row || !other.awaitingConfirm) continue;
-            StopConfirmRoutine(other);
-            ResetDeleteButton(other);
-        }
-
-        row.awaitingConfirm = true;
-        if (row.deleteLabel != null) row.deleteLabel.text  = "確認?";
-        if (row.deleteImage != null) row.deleteImage.color = deleteConfirmColor;
-
-        // タイマーは行ではなく this（AdminUIManager）で回す。
-        // 行が Destroy されてもコルーチンが道連れにならないようにするため。
-        StopConfirmRoutine(row);
-        row.confirmRoutine = StartCoroutine(DeleteConfirmTimeout(row));
-
-        SetStatus($"[WARN] Tap again to delete: {row.entry.displayName}");
-    }
-
-    private IEnumerator DeleteConfirmTimeout(EntryRow row)
-    {
-        float elapsed = 0f;
-        while (elapsed < deleteConfirmSeconds)
-        {
-            // 行が作り直された / 破棄された場合はここで抜ける
-            if (row == null || row.rowGO == null) yield break;
-            elapsed += Time.unscaledDeltaTime;
-            yield return null;
-        }
-
-        if (row == null) yield break;
-        row.confirmRoutine = null;
-        row.awaitingConfirm = false;
-        ResetDeleteButton(row);
-
-        if (row.rowGO != null && row.entry != null)
-            SetStatus($"Delete cancelled: {row.entry.displayName}");
-    }
-
-    private void ResetDeleteButton(EntryRow row)
-    {
-        if (row == null) return;
-        row.awaitingConfirm = false;
-        if (row.deleteLabel != null) row.deleteLabel.text  = row.deleteNormalLabel;
-        if (row.deleteImage != null) row.deleteImage.color = row.deleteNormalColor;
-    }
-
-    private void StopConfirmRoutine(EntryRow row)
-    {
-        if (row == null || row.confirmRoutine == null) return;
-        StopCoroutine(row.confirmRoutine);
-        row.confirmRoutine = null;
-    }
+    // ── 削除の2段階確認は削除した ──
+    //   運用上そもそもエントリを消さないと決まったため、行の [削除] ボタンごと外した。
+    //   確認待ちの状態・タイマー・色戻しも合わせて不要になっている。
+    //   FireworkManager.RemoveEntry() は残してあるので、必要になれば
+    //   ボタンと2段階確認を戻すだけでよい。
 
     // ── 終了ボタン（2段階確認）──
     //
@@ -1039,6 +974,25 @@ public class AdminUIManager : MonoBehaviour
     {
         if (handUpText == null) return;
         handUpText.text = _gesture != null ? $"HAND [{_gesture.HandUpThreshold:F2}]" : "HAND [N/A]";
+    }
+
+    // 人として検出するのに必要な確信度。
+    // ジェスチャーの閾値が「検出できた人が手を上げたか」の判定なのに対し、
+    // こちらは「そもそも人として拾うか」の手前の段階を絞る
+    private void OnPersonConfClicked()
+    {
+        if (_poseDetector == null) return;
+        _poseDetector.PersonConfidence = NextPreset(PersonConfPresets, _poseDetector.PersonConfidence);
+        UpdatePersonConfLabel();
+        SetStatus($"[OK] 人の検出閾値: {_poseDetector.PersonConfidence:F2}");
+    }
+
+    private void UpdatePersonConfLabel()
+    {
+        if (personConfText == null) return;
+        personConfText.text = _poseDetector != null
+            ? $"PERSON [{_poseDetector.PersonConfidence:F2}]"
+            : "PERSON [N/A]";
     }
 
     private void OnJumpClicked()

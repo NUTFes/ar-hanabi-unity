@@ -103,6 +103,7 @@ public static class AdminUIBuilder
         "ImgChanceButton",
         "ImgEnableButton",
         "MatteButton",
+        "PersonConfButton",
     };
 
     // 新規作成したときだけ入れる初期ラベル。
@@ -127,6 +128,7 @@ public static class AdminUIBuilder
         { "QuitButton",         "QUIT" },
         { "OpenTabButton",      "OPEN" },
         { "MatteButton",        "MATTE [OFF]" },
+        { "PersonConfButton",   "PERSON [0.50]" },
     };
 
     // 廃止したボタン。存在すれば削除する（Ctrl+Z 1回で戻せるよう Undo に登録する）
@@ -583,6 +585,7 @@ public static class AdminUIBuilder
         Assign(so, "imgChanceButton",          FindComponent<Button>(panel, "ImgChanceButton"), log);
         Assign(so, "imgEnableButton",          FindComponent<Button>(panel, "ImgEnableButton"), log);
         Assign(so, "matteButton",              FindComponent<Button>(panel, "MatteButton"), log);
+        Assign(so, "personConfButton",         FindComponent<Button>(panel, "PersonConfButton"), log);
 
         // 終了ボタンのラベルも同様
         var quitBtn = FindDescendant(panel, "QuitButton");
@@ -653,7 +656,11 @@ public static class AdminUIBuilder
         if (matteBtn != null)
             Assign(so, "matteText", matteBtn.GetComponentInChildren<TextMeshProUGUI>(true), log);
 
-        // 6ボタンの行そのもの（SETTINGS OFF中の表示/非表示を AdminUIManager 側で切替える）
+        var personConfBtn = FindDescendant(panel, "PersonConfButton");
+        if (personConfBtn != null)
+            Assign(so, "personConfText", personConfBtn.GetComponentInChildren<TextMeshProUGUI>(true), log);
+
+        // 設定行そのもの（SETTINGS OFF中の表示/非表示を AdminUIManager 側で切替える）
         var settingsToolbar = FindDescendant(panel, "SettingsToolbar");
         if (settingsToolbar != null)
             Assign(so, "settingsToolbar", settingsToolbar, log);
