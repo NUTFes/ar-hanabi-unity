@@ -157,6 +157,10 @@ public static class AdminUIBuilder
         // 画像花火の割合だけは 0–100 の百分率（既存の ImageFireworkChance の扱いに合わせる）
         new SliderSpec("ImgChance",  "画像花火の割合  50%",                0f,    100f,  true),
         new SliderSpec("PersonConf", "人物検出のきびしさ  0.50",            0.30f,   0.90f, false),
+        // 人数は整数。上下限は PoseLandmarkDetector の実用域（1〜10）に合わせてある。
+        // PersonConf と同じく PoseLandmarker の作り直しが走るので、
+        // 適用はドラッグ終了時（AdminUIManager 側の遅延適用）
+        new SliderSpec("MaxPeople",  "同時に検出する人数  5人",             1f,     10f,  true),
     };
 
     // タブごとの1行ヘルプ。TabHelpText の初期値に使う。
@@ -605,8 +609,13 @@ public static class AdminUIBuilder
         grid.constraintCount  = 3;
 
         // GridLayoutGroup は行数から preferredHeight を出せるが、
-        // 親（TabContent）が高さを聞きに来るタイミングで確実に値が要るので明示する
-        SetHeight(page, AdminUiStyle.SliderBlockH * 2f + TuneGridSpacing);
+        // 親（TabContent）が高さを聞きに来るタイミングで確実に値が要るので明示する。
+        //
+        // 行数は TuneSliders の本数から出す。以前は「2行ぶん」を直書きしていたので、
+        // スライダーを1本足しただけで3行目がページの外へはみ出して見えなくなっていた
+        // （足した本人が高さの直書きに気づけない、という壊れ方をする）
+        int rows = Mathf.CeilToInt(TuneSliders.Length / (float)grid.constraintCount);
+        SetHeight(page, AdminUiStyle.SliderBlockH * rows + TuneGridSpacing * (rows - 1));
 
         for (int i = 0; i < TuneSliders.Length; i++)
             BuildSliderBlock(page, TuneSliders[i], i, log);

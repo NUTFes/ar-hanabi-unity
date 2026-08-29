@@ -148,6 +148,11 @@ public class AdminUIManager : MonoBehaviour
              "このスライダーだけは「マウスを離した瞬間に1回だけ」適用する")]
     [SerializeField] private Slider           personConfSlider;
     [SerializeField] private TextMeshProUGUI  personConfText;
+    [Tooltip("同時に検出する人数の上限。多いほど一度に多くの人がジェスチャーできるが、\n" +
+             "MediaPipe は人数ぶん推論を回すので1フレームの処理時間が伸びる。\n" +
+             "人物検出のきびしさと同じく、適用のたびに PoseLandmarker を作り直す")]
+    [SerializeField] private Slider           maxPeopleSlider;
+    [SerializeField] private TextMeshProUGUI  maxPeopleText;
 
     [Header("カメラ")]
     [Tooltip("押すたびに次のカメラへ循環切替するボタン")]
@@ -213,13 +218,25 @@ public class AdminUIManager : MonoBehaviour
     private const string QuitNormalLabel  = "終了";
     private const string QuitConfirmLabel = "もう一度押すと終了";
 
-    // ── 人物検出スライダーの遅延適用 ──
-    // PersonConfidence の setter は MediaPipe の PoseLandmarker を作り直す（数十ms）。
-    // ドラッグ中に onValueChanged が毎フレーム飛ぶとその都度作り直しになって
-    // 映像が固まるので、値を控えておいてマウスを離したフレームで1回だけ適用する。
+    // ── 検出設定スライダーの遅延適用 ──
+    // PersonConfidence と MaxPeople の setter は、どちらも MediaPipe の
+    // PoseLandmarker を作り直す（数十ms）。ドラッグ中に onValueChanged が
+    // 毎フレーム飛ぶとその都度作り直しになって映像が固まるので、
+    // 値を控えておいてマウスを離したフレームで1回だけ適用する。
     // EventTrigger を持ち込まず、既存の Update ポーリングの作法に揃えている。
-    private bool  _personConfPending;
-    private float _personConfPendingValue;
+    //
+    // 2つを1つの型にまとめてあるのは、今後この種の「重い setter を持つ設定」を
+    // 足すときに、遅延適用の作法ごとコピーできるようにするため
+    private struct PendingValue
+    {
+        public bool  waiting;
+        public float value;
+
+        public void Request(float v) { waiting = true; value = v; }
+    }
+
+    private PendingValue _pendingPersonConf;
+    private PendingValue _pendingMaxPeople;
 
     // 行GameObject と FireworkEntry の対応表。
     // 選択ハイライトは全行 Destroy → 再生成ではなく、この表を使って背景色だけ差し替える。
@@ -374,7 +391,7 @@ public class AdminUIManager : MonoBehaviour
     {
         HealStuckButtons();
         SyncCameraIndexLabel();
-        ApplyPendingPersonConfidence();
+        ApplyPendingDetectorSettings();
 
         if (!toggleWithF1) return;
 
@@ -1074,15 +1091,23 @@ public class AdminUIManager : MonoBehaviour
             InitSlider(imgChanceSlider, _launcher.ImageFireworkChance * 100f,
                        v => { _launcher.ImageFireworkChance = v / 100f; UpdateImgChanceLabel(); });
 
-        // 人物検出だけは即時適用しない（PoseLandmarker の作り直しが走るため）。
-        // ラベルはドラッグに追従させ、実際の適用は ApplyPendingPersonConfidence に任せる
+        // 検出まわりの2本は即時適用しない（PoseLandmarker の作り直しが走るため）。
+        // ラベルはドラッグに追従させ、実際の適用は
+        // ApplyPendingDetectorSettings に任せる
         if (_poseDetector != null)
+        {
             InitSlider(personConfSlider, _poseDetector.PersonConfidence, v =>
             {
-                _personConfPending      = true;
-                _personConfPendingValue = v;
+                _pendingPersonConf.Request(v);
                 UpdatePersonConfLabel(v);
             });
+
+            InitSlider(maxPeopleSlider, _poseDetector.MaxPeople, v =>
+            {
+                _pendingMaxPeople.Request(v);
+                UpdateMaxPeopleLabel(Mathf.RoundToInt(v));
+            });
+        }
 
         UpdateHandUpLabel();
         UpdateJumpLabel();
@@ -1090,6 +1115,7 @@ public class AdminUIManager : MonoBehaviour
         UpdateHoldLabel();
         UpdateImgChanceLabel();
         UpdatePersonConfLabel();
+        UpdateMaxPeopleLabel();
     }
 
     private static void InitSlider(Slider slider, float initialValue, UnityEngine.Events.UnityAction<float> onChanged)
@@ -1099,22 +1125,34 @@ public class AdminUIManager : MonoBehaviour
         slider.onValueChanged.AddListener(onChanged);
     }
 
-    // 人物検出の遅延適用。マウスの左ボタンが離れたフレームで1回だけ適用する。
+    // 検出設定の遅延適用。マウスの左ボタンが離れたフレームで1回だけ適用する。
     // ドラッグ中に適用すると MediaPipe の PoseLandmarker を毎フレーム作り直して
     // 映像が固まるため（作り直し自体は数十msだが、毎フレームだと止まって見える）。
-    private void ApplyPendingPersonConfidence()
+    private void ApplyPendingDetectorSettings()
     {
-        if (!_personConfPending || _poseDetector == null) return;
+        if (_poseDetector == null) return;
+        if (!_pendingPersonConf.waiting && !_pendingMaxPeople.waiting) return;
 
         // 新 Input System 専用プロジェクトなので Input.GetMouseButton は使えない。
         // マウスが無い環境（タッチ等）では押しっぱなし判定ができないので、即時適用に倒す
         var mouse = Mouse.current;
         if (mouse != null && mouse.leftButton.isPressed) return;
 
-        _personConfPending = false;
-        _poseDetector.PersonConfidence = _personConfPendingValue;
-        UpdatePersonConfLabel();
-        SetStatus($"[OK] 人物検出のきびしさ: {_poseDetector.PersonConfidence:F2}");
+        if (_pendingPersonConf.waiting)
+        {
+            _pendingPersonConf.waiting = false;
+            _poseDetector.PersonConfidence = _pendingPersonConf.value;
+            UpdatePersonConfLabel();
+            SetStatus($"[OK] 人物検出のきびしさ: {_poseDetector.PersonConfidence:F2}");
+        }
+
+        if (_pendingMaxPeople.waiting)
+        {
+            _pendingMaxPeople.waiting = false;
+            _poseDetector.MaxPeople = Mathf.RoundToInt(_pendingMaxPeople.value);
+            UpdateMaxPeopleLabel();
+            SetStatus($"[OK] 同時に検出する人数: {_poseDetector.MaxPeople}人");
+        }
     }
 
     private void UpdateHandUpLabel()
@@ -1172,6 +1210,20 @@ public class AdminUIManager : MonoBehaviour
         personConfText.text = _poseDetector != null
             ? $"人物検出のきびしさ  {value:F2}"
             : "人物検出のきびしさ  ―";
+    }
+
+    // 同時に検出する人数の上限。
+    // 「人物検出のきびしさ」が1人ずつの採否を決めるのに対し、こちらは
+    // 何人まで並行して追いかけるかの上限。多いほど1フレームの推論が重くなる
+    private void UpdateMaxPeopleLabel() =>
+        UpdateMaxPeopleLabel(_poseDetector != null ? _poseDetector.MaxPeople : 0);
+
+    private void UpdateMaxPeopleLabel(int value)
+    {
+        if (maxPeopleText == null) return;
+        maxPeopleText.text = _poseDetector != null
+            ? $"同時に検出する人数  {value}人"
+            : "同時に検出する人数  ―";
     }
 
     // 比率スライダーと違い、こちらは即座に「画像花火を一切出さない」緊急スイッチ。
