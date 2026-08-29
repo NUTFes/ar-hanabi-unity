@@ -61,6 +61,15 @@ public class FireworkManager : MonoBehaviour
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
+
+        // 画像花火の細かさは Admin画面から変えられる運用設定なので、
+        // 展示が複数日にまたがっても引き継げるよう PlayerPrefs から復元する。
+        // キーが無い＝一度も触っていない場合は Inspector の値がそのまま使われる
+        conversionSettings.resolution = SettingsStore.GetInt(
+            $"{nameof(FireworkManager)}.imageResolution", conversionSettings.resolution);
+
+        // ImageToParticles は settings を参照で持つので、以後 resolution を書き換えれば
+        // そのまま次の変換に効く（作り直す必要はない）
         _converter = new ImageToParticles(conversionSettings);
     }
 
@@ -149,6 +158,85 @@ public class FireworkManager : MonoBehaviour
         // PUT /fireworks/:id は送らない（ユーザーの共有設定 isShareable を書き換えてしまうため）
         // isActive はこのアプリ内だけのローカルな表示制御として扱う
         RaiseEntriesChanged();
+    }
+
+    // ── 画像花火の細かさ（変換解像度）──
+    //
+    // 画像を n×n に縮小してから粒に変換している（ImageToParticles 参照）ので、
+    // この n が「画像花火の細かさ」そのものになる。
+    // 粒のサイズは ImageFireworkEffect が data.width から導出するため、
+    // n を変えても粒が隙間だらけ／団子になることはなく、見た目は自動で追従する。
+    //
+    // ── 変えたら作り直しが要る理由 ──
+    //   ParticleData は取得時に一度だけ焼いてエントリに持たせている。
+    //   n を変えても、既に変換済みのエントリは古い細かさのまま残るので、
+    //   設定を変えた時点で作り直さないと「次に取ってきた花火だけ細かい」ことになる。
+    public int ImageResolution => conversionSettings.resolution;
+
+    /// <summary>
+    /// 画像花火の細かさを変える。変換済みのエントリはすべて焼き直す。
+    /// 焼き直しはコルーチンなので、呼び出し側で StartCoroutine すること
+    /// （件数が多いと同期処理ではアプリが固まるため。ConvertAllCoroutine と同じ方針）。
+    /// </summary>
+    public IEnumerator SetImageResolutionCoroutine(int resolution, System.Action<int> onDone)
+    {
+        // 極端な値で焼くと粒が1個になったり数万個になったりするので、実用域に丸める
+        resolution = Mathf.Clamp(resolution, 8, 128);
+
+        if (resolution == conversionSettings.resolution)
+        {
+            onDone?.Invoke(0);
+            yield break;
+        }
+
+        conversionSettings.resolution = resolution;
+        SettingsStore.SetInt($"{nameof(FireworkManager)}.imageResolution", resolution);
+        Debug.Log($"[FWManager] 画像花火の細かさを {resolution}x{resolution} に変更");
+
+        yield return ReconvertAllCoroutine(onDone);
+    }
+
+    /// <summary>
+    /// 変換済みのエントリを現在の設定で焼き直す。
+    /// ConvertAllCoroutine が「未変換だけ」を対象にするのに対し、こちらは
+    /// 変換済みも含めて作り直す（設定を変えた後の追従用）。
+    /// </summary>
+    public IEnumerator ReconvertAllCoroutine(System.Action<int> onDone)
+    {
+        var targets = _entries.Where(e => e.localTexture != null).ToList();
+        if (targets.Count == 0)
+        {
+            onDone?.Invoke(0);
+            yield break;
+        }
+
+        int done = 0;
+
+        // 1件ごとに通知すると UI が全行を作り直して O(N²) になるため、
+        // ループ中は抑制して最後に1回だけ通知する（ConvertAll と同じ理由）
+        _suppressEvents = true;
+        try
+        {
+            foreach (var e in targets)
+            {
+                e.particleData = _converter.Convert(e.localTexture);
+                e.isConverted  = true;
+                done++;
+
+                // 数件ごとに1フレーム譲る。全件を1フレームで焼くと
+                // 件数しだいで目に見えて固まる
+                if (done % 4 == 0) yield return null;
+            }
+        }
+        finally
+        {
+            // 途中でコルーチンが止められても抑制フラグを立てっぱなしにしない
+            _suppressEvents = false;
+        }
+
+        Debug.Log($"[FWManager] {done} 件を焼き直しました（{conversionSettings.resolution}x{conversionSettings.resolution}）");
+        RaiseEntriesChanged();
+        onDone?.Invoke(done);
     }
 
     // ── 変換 ──
