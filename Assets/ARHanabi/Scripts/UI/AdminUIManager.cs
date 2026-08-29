@@ -10,19 +10,38 @@ using System.Collections.Generic;
 //
 // 画面レイアウト（Canvas 上）:
 //   ┌──────────────────────────────────────────────────────┐
-//   │  🎆 花火管理                          [QUIT] [閉じる] │
-//   │  [テスト打ち上げ] [更新] [CAM] [SPACE] [SETTINGS]     │
-//   │  [FRAME] [UFO] [HANABI] [SFX]                        │ ← 宇宙モードON中のみ
-//   │  [HAND] [JUMP] [COOLDOWN] [HOLD]                     │ ← SETTINGS ON中のみ
-//   │  [IMG%] [IMG] [MATTE] [PERSON]                       │
-//   │  ステータステキスト                                   │
+//   │  🎆 花火管理                          [終了] [閉じる] │ Header
+//   │  ［基本］［宇宙モード］［検出の調整］  全12件 / 有効8件│ TabBar
+//   │  （選択中のタブの中身。同時に1枚だけ出る）            │ TabContent
+//   │  ▸ タブごとの1行ヘルプ                                │ TabHelpText
+//   │  ステータス（2行・接頭辞を色分け）                    │ StatusText
 //   ├──────────────────────────────────────────────────────┤
-//   │  [thumb] 名前.jpg  [有効] [選択]                      │ ← エントリ行
-//   │  [thumb] 名前2.jpg [有効] [選択]                      │
+//   │  [thumb] 名前.jpg  変換済み [表示中] [選択]           │ ← エントリ行
+//   │  [thumb] 名前2.jpg 未変換   [停止中] [選択]           │
 //   │  ...                                                 │
 //   └──────────────────────────────────────────────────────┘
-//   ※ パネルを閉じている間は画面左上に [OPEN] タブが出る
+//   ※ パネルを閉じている間は画面左上に [開く] タブが出る
 //      （AdminPanel の外に置いてあるので CanvasGroup で一緒に消えない）
+//
+// ── なぜタブ構成にしたか ──
+//   展示当日、この画面を触るのは非エンジニアのスタッフでマウス操作。
+//   以前は「宇宙モードON中だけ出る行」と「SETTINGS ON中だけ出る行」の2本を
+//   折りたたみで足していたため、両方開くと画面の4割がボタンで埋まり、
+//   一覧が9行しか見えないうえ「今どこを触っているのか」が分からなくなっていた。
+//   同時に1枚しか開かないタブにすると、この2つの問題が構造的に消える。
+//   また、宇宙タブは宇宙モードOFFでも開ける（個別スイッチの設定は
+//   マスターとは独立に保存されるので、OFF中に仕込んでおける）。
+//
+// ── 数値の調整をスライダーにした理由 ──
+//   以前はボタンを押すたびにプリセットを1つ先へ送る方式だったが、
+//   行き過ぎると一周するまで最大8連打が必要で、現場で使いものにならなかった。
+//   uGUI の Slider を使うのはこの画面が初なので、部品の生成は
+//   AdminUIBuilder.BuildSliderBlock 側に寄せてある。
+//
+// ── 配色 ──
+//   色と寸法は AdminUiStyle が単一ソース。ここに直書きしない。
+//   「色が付いている＝有効・注意」（ON=緑 / 危険=赤 / 選択中=濃紺）で意味を固定し、
+//   白背景は「通常・OFF側」に固定している。全ての文字/背景の組でコントラスト比 4.5:1 以上。
 //
 // セットアップ手順:
 //   1. Hierarchy: Canvas > AdminPanel を作成
@@ -59,11 +78,29 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private Transform entryListContent;   // ScrollView > Viewport > Content
     [SerializeField] private TextMeshProUGUI statusText;
 
+    [Header("タブ")]
+    [Tooltip("3枚のタブ。同時に開くのは1枚だけ。\n" +
+             "選択中は濃紺背景＋白文字、非選択は白背景＋濃紺文字（AdminUiStyle）")]
+    [SerializeField] private Button           tabBasicButton;
+    [SerializeField] private TextMeshProUGUI  tabBasicText;
+    [SerializeField] private Button           tabSpaceButton;
+    [SerializeField] private TextMeshProUGUI  tabSpaceText;
+    [SerializeField] private Button           tabTuneButton;
+    [SerializeField] private TextMeshProUGUI  tabTuneText;
+    [Tooltip("各タブの中身。SetActive で1枚だけ表示する")]
+    [SerializeField] private Transform        tabBasicPage;
+    [SerializeField] private Transform        tabSpacePage;
+    [SerializeField] private Transform        tabTunePage;
+    [Tooltip("選択中のタブに応じて切り替わる1行の説明文")]
+    [SerializeField] private TextMeshProUGUI  tabHelpText;
+    [Tooltip("タブ行の右端に常設する件数表示。\n" +
+             "以前は RefreshList がステータス行を「Entries: N」で毎回上書きしてしまい、\n" +
+             "更新やエラーの通知が読む前に消えていた。件数だけをここへ追い出す")]
+    [SerializeField] private TextMeshProUGUI  entryCountText;
+
     [Header("宇宙モード")]
     [SerializeField] private Button           spaceModeButton;
     [SerializeField] private TextMeshProUGUI  spaceModeText;
-    [Tooltip("個別トグル4つの行。宇宙モードOFF中は非表示にする")]
-    [SerializeField] private Transform        spaceToolbar;
     [SerializeField] private Button           frameToggleButton;
     [SerializeField] private TextMeshProUGUI  frameToggleText;
     [SerializeField] private Button           ufoToggleButton;
@@ -73,37 +110,38 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private Button           sfxToggleButton;
     [SerializeField] private TextMeshProUGUI  sfxToggleText;
 
-    [Header("設定（ジェスチャー感度・花火の出し方）")]
-    [Tooltip("ビルド後にUnity Editorへ触れない前提で、展示中に調整したくなる値を\n" +
-             "ここへ集約している。押すたびにプリセット値を順に切り替える方式\n" +
-             "（宇宙モードのHANABIボタンと同じ操作感）。スライダーではなくボタンに\n" +
-             "したのは、このAdmin UIに既にある「ボタン+ラベル」の部品だけで\n" +
-             "完結させ、新しいUI部品（Slider等）を持ち込まないため")]
-    [SerializeField] private Button           settingsModeButton;
-    [SerializeField] private TextMeshProUGUI  settingsModeText;
-    [Tooltip("感度・花火比率の6ボタンの行。設定モードOFF中は非表示にする")]
-    [SerializeField] private Transform        settingsToolbar;
-    [SerializeField] private Button           handUpButton;
-    [SerializeField] private TextMeshProUGUI  handUpText;
-    [SerializeField] private Button           jumpButton;
-    [SerializeField] private TextMeshProUGUI  jumpText;
-    [SerializeField] private Button           cooldownButton;
-    [SerializeField] private TextMeshProUGUI  cooldownText;
-    [SerializeField] private Button           holdButton;
-    [SerializeField] private TextMeshProUGUI  holdText;
-    [SerializeField] private Button           imgChanceButton;
-    [SerializeField] private TextMeshProUGUI  imgChanceText;
+    [Header("基本タブのトグル")]
     [SerializeField] private Button           imgEnableButton;
     [SerializeField] private TextMeshProUGUI  imgEnableText;
-    [Tooltip("カメラ映像を画面中央の丸に収めて周囲を黒くする演出のON/OFF。\n" +
-             "OFFにすると、カメラのClearFlags・背景Quadのscale・骨格の表示が\n" +
+    [Tooltip("カメラ映像を画面下部の半楕円ドームに収めて周囲を黒くする演出のON/OFF。\n" +
+             "OFFにすると、カメラのClearFlags・背景Quadのscale/positionが\n" +
              "すべて元の値に復元される（現場で「あり/なし」を見比べるためのトグル）")]
     [SerializeField] private Button           matteButton;
     [SerializeField] private TextMeshProUGUI  matteText;
+    [Tooltip("認識した人の骨格線を描くか。丸窓モードとは独立した設定で、\n" +
+             "ドーム表示中でもONならボーンは出る（以前はドーム化が強制的にOFFにしていた）")]
+    [SerializeField] private Button           skeletonButton;
+    [SerializeField] private TextMeshProUGUI  skeletonText;
+
+    [Header("検出の調整タブ（スライダー）")]
+    [Tooltip("ビルド後にUnity Editorへ触れない前提で、展示中に調整したくなる値を\n" +
+             "ここへ集約している。値そのものは GestureDetector / FireworkLauncher /\n" +
+             "PoseLandmarkDetector 側で PlayerPrefs に永続化される")]
+    [SerializeField] private Slider           handUpSlider;
+    [SerializeField] private TextMeshProUGUI  handUpText;
+    [SerializeField] private Slider           jumpSlider;
+    [SerializeField] private TextMeshProUGUI  jumpText;
+    [SerializeField] private Slider           cooldownSlider;
+    [SerializeField] private TextMeshProUGUI  cooldownText;
+    [SerializeField] private Slider           holdSlider;
+    [SerializeField] private TextMeshProUGUI  holdText;
+    [SerializeField] private Slider           imgChanceSlider;
+    [SerializeField] private TextMeshProUGUI  imgChanceText;
     [Tooltip("人として検出するのに必要な確信度。上げると人型のポスターや人形などの\n" +
              "誤検知が減るが、遠い人・暗い場所の人を拾わなくなる。\n" +
-             "押すたびに MediaPipe の PoseLandmarker を作り直す（数十ms）")]
-    [SerializeField] private Button           personConfButton;
+             "適用のたびに MediaPipe の PoseLandmarker を作り直す（数十ms）ので、\n" +
+             "このスライダーだけは「マウスを離した瞬間に1回だけ」適用する")]
+    [SerializeField] private Slider           personConfSlider;
     [SerializeField] private TextMeshProUGUI  personConfText;
 
     [Header("カメラ")]
@@ -134,34 +172,16 @@ public class AdminUIManager : MonoBehaviour
     [Tooltip("F1キーで管理画面の表示/非表示をトグルする（新Input System）")]
     [SerializeField] private bool toggleWithF1 = true;
 
-    [Header("行の見た目")]
-    [Tooltip("通常の行の背景色")]
-    [SerializeField] private Color rowNormalColor   = new Color(1f, 1f, 1f, 0.04f);
-    [Tooltip("選択中の行の背景色（ハイライト）")]
-    [SerializeField] private Color rowSelectedColor = new Color(0.35f, 0.55f, 0.95f, 0.35f);
-
     [Header("終了ボタンの2段階確認")]
     [Tooltip("1回目のクリックから、この秒数内に再クリックされたら実際にアプリを終了する。\n" +
              "誤タップでキオスクを落とさないための猶予")]
     [SerializeField] private float quitConfirmSeconds = 3f;
-    [Tooltip("確認待ち状態の終了ボタンの色（警告色）")]
-    [SerializeField] private Color quitConfirmColor = new Color(0.85f, 0.15f, 0.15f);
-
-    [Header("ボタンのラベル")]
-    [Tooltip("ボタンラベルの自動縮小の下限フォントサイズ")]
-    [SerializeField] private float buttonFontSizeMin = 8f;
-    [Tooltip("ボタンラベルの自動縮小の上限フォントサイズ")]
-    [SerializeField] private float buttonFontSizeMax = 12f;
 
     // ── 定数 ──
-    private const float ButtonMinWidth = 72f;   // 従来の preferredWidth。今は「最小幅」として扱う
-    private const float ButtonHeight   = 36f;
-    private const float EntryRowHeight = 64f;   // AdminUIBuilder.EntryRowHeight と一致させる
-
-    // ボタンのラベル色。AdminUIBuilder.ButtonLabelColor と同じ値にすること。
-    // 以前は白だったが、ツールバーのボタンの背景が既定の白のままで
-    // 文字がほぼ読めなかったため、濃紺寄りのダークグレーに統一した
-    private static readonly Color ButtonLabelColor = new Color(0.09f, 0.12f, 0.17f, 1f);
+    // 色・寸法・フォントサイズは AdminUiStyle が単一ソース。
+    // 以前はここと AdminUIBuilder の両方に同じ色定数があり、
+    // 「片方を変えたらもう片方も手で直すこと」というコメント付きで運用していた（案の定ズレた）。
+    private const float ButtonMinWidth = 72f;   // 行のボタンの最小幅（幅自体はラベルに合わせて伸びる）
 
     // ── 内部 ──
     private FireworkManager     _manager;
@@ -170,43 +190,31 @@ public class AdminUIManager : MonoBehaviour
     private GestureDetector     _gesture;
     private CameraCircleMatte   _matte;
     private PoseLandmarkDetector _poseDetector;
+    private SkeletonRenderer    _skeleton;
     private FireworkEntry       _selectedEntry;
     private CanvasGroup        _canvasGroup;
     private bool               _isVisible = true;
 
-    // SETTINGS行の開閉。宇宙モードのマスターと違い、この値自体は「効き目」を
-    // 持たない純粋なUI表示切替なので、永続化もしない（次回起動時は閉じた状態でよい）
-    private bool _settingsToolbarVisible = false;
+    // ── タブ ──
+    // 宇宙モードのマスターと違い、この値自体は「効き目」を持たない純粋なUI表示切替なので
+    // 永続化しない（次回起動時は「基本」から始まってよい）
+    private enum AdminTab { Basic, Space, Tune }
+    private AdminTab _activeTab = AdminTab.Basic;
 
     // 終了ボタンの2段階確認。行ごとの確認待ちを持つ削除ボタンと違い
     // アプリ全体につき1つしか無いので、行(EntryRow)を介さずここに直接持つ
     private bool       _quitAwaitingConfirm;
     private Coroutine  _quitConfirmRoutine;
-    private Image      _quitImage;
-    private Color      _quitNormalColor;
-    private const string QuitNormalLabel = "QUIT";
+    private const string QuitNormalLabel  = "終了";
+    private const string QuitConfirmLabel = "もう一度押すと終了";
 
-    // ジェスチャー感度・花火比率のプリセット値。
-    // スライダーではなくボタンで「近い値の次」へ進める方式にしている
-    // （NextPreset 参照）ので、厳密な連続値ではなくこの一覧の中だけを巡回する。
-    // HandUp/Jump に 1.00 を含めているのは、MainScene に既に保存されている値
-    // （handUpThreshold: 1, jumpThreshold: 1）が一覧に無いと、初回クリックで
-    // いきなり一番近いプリセットへ大ジャンプしてしまうため
-    // ── 1.0 より上まで用意している理由 ──
-    //   閾値は「肩幅に対する相対値」で、1.0 = 肩幅ぶん手を上げる、という意味。
-    //   上限が 1.0 だと「肩幅ぶん上げれば発火」までしか厳しくできず、
-    //   人が密集して腕が写り込む展示では誤発火が止められなかった。
-    //   1.0 を超える値は「肩幅の1.5倍・2倍まで上げないと発火しない」を意味し、
-    //   物理的に到達可能（万歳すれば手は肩から肩幅2倍ほど上がる）なので実用範囲。
-    private static readonly float[] HandUpPresets      = { 0.10f, 0.15f, 0.25f, 0.40f, 0.60f, 1.00f, 1.50f, 2.00f, 2.50f };
-    private static readonly float[] JumpPresets        = { 0.03f, 0.06f, 0.10f, 0.15f, 0.25f, 0.40f, 1.00f, 1.50f, 2.00f };
-
-    // 人として検出するのに必要な確信度。MediaPipe の既定は 0.5。
-    // 上げるほど誤検知が減るが、遠い人や見切れている人を拾わなくなる
-    private static readonly float[] PersonConfPresets  = { 0.30f, 0.40f, 0.50f, 0.60f, 0.70f, 0.80f, 0.90f };
-    private static readonly float[] CooldownPresets    = { 0f, 0.3f, 0.5f, 1.0f, 1.5f, 2.0f, 3.0f };
-    private static readonly float[] HoldPresets        = { 0.2f, 0.3f, 0.5f, 0.8f, 1.0f, 1.5f };
-    private static readonly float[] ImageChancePresets = { 0f, 0.25f, 0.5f, 0.75f, 1.0f };
+    // ── 人物検出スライダーの遅延適用 ──
+    // PersonConfidence の setter は MediaPipe の PoseLandmarker を作り直す（数十ms）。
+    // ドラッグ中に onValueChanged が毎フレーム飛ぶとその都度作り直しになって
+    // 映像が固まるので、値を控えておいてマウスを離したフレームで1回だけ適用する。
+    // EventTrigger を持ち込まず、既存の Update ポーリングの作法に揃えている。
+    private bool  _personConfPending;
+    private float _personConfPendingValue;
 
     // 行GameObject と FireworkEntry の対応表。
     // 選択ハイライトは全行 Destroy → 再生成ではなく、この表を使って背景色だけ差し替える。
@@ -218,6 +226,9 @@ public class AdminUIManager : MonoBehaviour
         public FireworkEntry   entry;
         public GameObject      rowGO;
         public Image           background;
+        // ［選択］⇔［解除］でラベルだけを差し替えるための参照。
+        // 行を作り直さずに文字を変えたいので持っている
+        public TextMeshProUGUI selectLabel;
         // 削除ボタン用の参照（deleteImage / confirmRoutine など）は、
         // [削除] ボタンごと廃止したので持っていない
     }
@@ -274,7 +285,6 @@ public class AdminUIManager : MonoBehaviour
         UpdateUfoToggleLabel();
         UpdateHanabiModeLabel();
         UpdateSfxToggleLabel();
-        UpdateSpaceToolbarVisibility();
 
         // 設定パネル（ジェスチャー感度・花火の出し方）も FireworkManager に依存しないので、
         // 同じ理由で早期 return より先に配線する。
@@ -284,15 +294,9 @@ public class AdminUIManager : MonoBehaviour
         if (_gesture == null)
             Debug.LogWarning("[AdminUI] GestureDetector が見つかりません。感度調整は無効です");
 
-        settingsModeButton?.onClick.AddListener(OnSettingsModeClicked);
-        handUpButton      ?.onClick.AddListener(OnHandUpClicked);
-        jumpButton        ?.onClick.AddListener(OnJumpClicked);
-        cooldownButton    ?.onClick.AddListener(OnCooldownClicked);
-        holdButton        ?.onClick.AddListener(OnHoldClicked);
-        imgChanceButton   ?.onClick.AddListener(OnImgChanceClicked);
-        imgEnableButton   ?.onClick.AddListener(OnImgEnableClicked);
-        matteButton       ?.onClick.AddListener(OnMatteClicked);
-        personConfButton  ?.onClick.AddListener(OnPersonConfClicked);
+        imgEnableButton ?.onClick.AddListener(OnImgEnableClicked);
+        matteButton     ?.onClick.AddListener(OnMatteClicked);
+        skeletonButton  ?.onClick.AddListener(OnSkeletonClicked);
 
         // 人の検出閾値は PoseLandmarkDetector が持つ。GestureDetector と同じく
         // AdminPanel の外にあるのでシーンから自動解決する
@@ -300,26 +304,31 @@ public class AdminUIManager : MonoBehaviour
         if (_poseDetector == null)
             Debug.LogWarning("[AdminUI] PoseLandmarkDetector が見つかりません。人の検出閾値の調整は無効です");
 
-        UpdateSettingsModeLabel();
-        UpdateHandUpLabel();
-        UpdateJumpLabel();
-        UpdateCooldownLabel();
-        UpdateHoldLabel();
-        UpdateImgChanceLabel();
+        // 骨格の表示トグル。丸窓モードとは独立した設定で、
+        // 表示状態は SkeletonRenderer 自身が PlayerPrefs に永続化する
+        _skeleton = FindFirstObjectByType<SkeletonRenderer>();
+        if (_skeleton == null)
+            Debug.LogWarning("[AdminUI] SkeletonRenderer が見つかりません。ボーン表示の切替は無効です");
+
+        WireSliders();
+
         UpdateImgEnableLabel();
         UpdateMatteLabel();
-        UpdatePersonConfLabel();
-        UpdateSettingsToolbarVisibility();
+        UpdateSkeletonLabel();
+
+        // タブは「基本」から始める。ページの SetActive とタブの色をここで揃える
+        SwitchTab(AdminTab.Basic);
 
         // 終了ボタンも FireworkManager に依存しないので早期 return より先に配線する。
         // アプリ全体の終了操作なので、これが機能しない状態は避けたい
-        if (quitButton != null)
-        {
-            _quitImage = quitButton.GetComponent<Image>();
-            if (_quitImage != null) _quitNormalColor = _quitImage.color;
-            quitButton.onClick.AddListener(OnQuitClicked);
-        }
-        if (quitText != null) quitText.text = QuitNormalLabel;
+        quitButton?.onClick.AddListener(OnQuitClicked);
+        ResetQuitButton();
+
+        // タブは FireworkManager にも他のどのコンポーネントにも依存しない純粋なUI操作なので、
+        // 早期 return より先に配線する（エラー状態でも画面を見て回れるようにするため）
+        tabBasicButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Basic));
+        tabSpaceButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Space));
+        tabTuneButton  ?.onClick.AddListener(() => SwitchTab(AdminTab.Tune));
 
         // 閉じる/開くも FireworkManager に依存しない、パネル自身の表示制御なので
         // 同じ理由で早期 return より先に配線する
@@ -334,7 +343,8 @@ public class AdminUIManager : MonoBehaviour
         _manager = FireworkManager.Instance;
         if (_manager == null)
         {
-            SetStatus("[ERROR] FireworkManager not found");
+            UpdateEntryCountLabel();
+            SetStatus("[ERROR] FireworkManager が見つかりません（一覧と更新は使えません）");
             return;
         }
 
@@ -348,13 +358,14 @@ public class AdminUIManager : MonoBehaviour
         _manager.OnEntriesChanged += RefreshList;
 
         RefreshList();
-        SetStatus("[OK] Admin UI ready  (F1: show/hide)");
+        SetStatus("[OK] 準備完了（F1キーでこの画面の表示/非表示）");
     }
 
     private void Update()
     {
         HealStuckButtons();
         SyncCameraIndexLabel();
+        ApplyPendingPersonConfidence();
 
         if (!toggleWithF1) return;
 
@@ -479,7 +490,7 @@ public class AdminUIManager : MonoBehaviour
         }
 
         SetRefreshInteractable(false);
-        SetStatus("Fetching from API...");
+        SetStatus("APIから取得中...");
 
         // コルーチンは FireworkManager 側で回す。
         // このパネルが非アクティブ化されると自分で StartCoroutine したコルーチンは
@@ -488,11 +499,11 @@ public class AdminUIManager : MonoBehaviour
         {
             SetRefreshInteractable(true);
 
-            // OnEntriesChanged はこのコールバックより先に発火し RefreshList が
-            // 既に "Entries: ..." を表示済みのため、ここで上書きしても問題ない
+            // 件数表示はタブ行の常設ラベルへ移したので、RefreshList が
+            // この通知を上書きすることはもう無い（以前は読む前に消えていた）
             if (err != null)        SetStatus($"[ERROR] {err}");
-            else if (added == 0)    SetStatus("[OK] No new fireworks");
-            else                    SetStatus($"[OK] Fetched {added} new");
+            else if (added == 0)    SetStatus("[OK] 新しい花火はありませんでした");
+            else                    SetStatus($"[OK] 新しい花火を{added}件取得しました");
         }));
     }
 
@@ -514,11 +525,8 @@ public class AdminUIManager : MonoBehaviour
 
         if (_manager == null || entryListContent == null) return;
 
-        // ステータス更新
-        int total  = _manager.Entries.Count;
-        int active = 0;
-        foreach (var e in _manager.Entries) if (e.isActive) active++;
-        SetStatus($"Entries: {total}  Active: {active}");
+        // 件数はタブ行の右端の常設ラベルへ。ステータス行は通知専用に空けておく
+        UpdateEntryCountLabel();
 
         // 削除済みエントリが選択されたままにならないように
         if (_selectedEntry != null && !ContainsEntry(_selectedEntry))
@@ -545,21 +553,47 @@ public class AdminUIManager : MonoBehaviour
     }
 
     // ── 選択ハイライト（行を作り直さない軽い経路）──
-    private void SelectEntry(FireworkEntry entry)
+    //
+    // 同じ行をもう一度押したら選択解除する。
+    // 以前は一度選ぶと戻す手段が無く、［テスト打上］がその画像の固定プレビューに
+    // 化けたまま「ランダムに戻せない」状態になっていた
+    private void ToggleSelectEntry(FireworkEntry entry)
     {
+        if (_selectedEntry == entry)
+        {
+            ClearSelection();
+            RefreshRowHighlights();
+            RefreshRowSelectLabels();
+            SetStatus("[OK] 選択を解除しました（テスト打上はランダムに戻ります）");
+            return;
+        }
+
         _selectedEntry = entry;
 
         // RefreshList() は全行 Destroy → 再生成になるので使わない。背景色だけ差し替える。
         RefreshRowHighlights();
+        RefreshRowSelectLabels();
 
         if (previewImage != null) previewImage.texture = entry.localTexture;
         if (detailText   != null)
         {
             detailText.text = entry.isConverted
-                ? $"Particles: {entry.particleData.particles.Length}\nSize: {entry.particleData.width}x{entry.particleData.height}"
-                : "Not converted";
+                ? $"粒子数: {entry.particleData.particles.Length}\nサイズ: {entry.particleData.width}x{entry.particleData.height}"
+                : "未変換";
         }
-        SetStatus($"Selected: {entry.displayName}");
+        SetStatus($"[OK] 選択中: {entry.displayName}");
+    }
+
+    // 選択/解除でラベルが変わるのは選択中の行と直前まで選択中だった行だけだが、
+    // 行数はたかだか数十なので分岐を持たずに全行を舐める（分岐のほうが壊れやすい）
+    private void RefreshRowSelectLabels()
+    {
+        foreach (var row in _rows)
+        {
+            if (row == null || row.selectLabel == null) continue;
+            row.selectLabel.text = (row.entry == _selectedEntry && _selectedEntry != null)
+                ? "解除" : "選択";
+        }
     }
 
     // 選択解除。プレビューも一緒に空にする。
@@ -578,8 +612,8 @@ public class AdminUIManager : MonoBehaviour
         {
             if (row == null || row.background == null) continue;
             row.background.color = (row.entry == _selectedEntry && _selectedEntry != null)
-                ? rowSelectedColor
-                : rowNormalColor;
+                ? AdminUiStyle.RowSelected
+                : AdminUiStyle.RowNormal;
         }
     }
 
@@ -591,19 +625,18 @@ public class AdminUIManager : MonoBehaviour
         // ── 行ルート ──
         var rowGO  = new GameObject($"Row_{entry.displayName}");
         var rowRT  = rowGO.AddComponent<RectTransform>();
-        rowRT.sizeDelta = new Vector2(0f, EntryRowHeight);
+        rowRT.sizeDelta = new Vector2(0f, AdminUiStyle.EntryRowHeight);
 
         // 親（Viewport > Content）の VerticalLayoutGroup は子の高さを
-        // LayoutElement から決めるため、sizeDelta だけでは効かない。
-        // 値は AdminUIBuilder.EntryRowHeight と揃えること。
+        // LayoutElement から決めるため、sizeDelta だけでは効かない
         var rowLe = rowGO.AddComponent<LayoutElement>();
-        rowLe.minHeight       = EntryRowHeight;
-        rowLe.preferredHeight = EntryRowHeight;
+        rowLe.minHeight       = AdminUiStyle.EntryRowHeight;
+        rowLe.preferredHeight = AdminUiStyle.EntryRowHeight;
         rowLe.flexibleHeight  = 0f;
 
         // 選択ハイライト用の背景（クリックを奪わないよう raycastTarget は切る）
         var bg = rowGO.AddComponent<Image>();
-        bg.color         = rowNormalColor;
+        bg.color         = AdminUiStyle.RowNormal;
         bg.raycastTarget = false;
 
         var hLayout = rowGO.AddComponent<HorizontalLayoutGroup>();
@@ -644,19 +677,26 @@ public class AdminUIManager : MonoBehaviour
         //   どちらも FireworkManager 側の API（ConvertEntry / RemoveEntry）は
         //   残してあるので、必要になればボタンを戻すだけでよい。
 
-        // [有効/無効] トグル
-        TextMeshProUGUI activeLabel = null;
-        MakeButton(rowGO.transform, entry.isActive ? "[ON]" : "[OFF]",
-            entry.isActive ? new Color(0.1f, 0.7f, 0.3f) : new Color(0.4f, 0.4f, 0.4f),
+        // ［表示中 / 停止中］トグル。
+        // ON=緑 / OFF=白 という他のトグルと同じ規則に揃えてある。
+        // 以前の OFF は灰背景に暗い文字でコントラスト比 2.9:1 と読めていなかった
+        MakeButton(rowGO.transform,
+            entry.isActive ? "表示中" : "停止中",
+            entry.isActive ? AdminUiStyle.OnBackground : AdminUiStyle.ButtonBackground,
+            entry.isActive ? AdminUiStyle.OnLabel      : AdminUiStyle.ButtonLabel,
             () =>
             {
                 _manager.SetActive(entry, !entry.isActive);
                 // ラベルはOnEntriesChanged → RefreshListで更新される
-            }, out activeLabel);
+            });
 
-        // [選択] ボタン（プレビューパネルと行ハイライトに反映）
-        MakeButton(rowGO.transform, "Select", new Color(0.6f, 0.4f, 0.8f),
-            () => SelectEntry(entry));
+        // ［選択 / 解除］ボタン（プレビューパネルと行ハイライトに反映）。
+        // 選択中の行では「解除」になり、押すと選択を外せる
+        MakeButton(rowGO.transform,
+            entry == _selectedEntry && _selectedEntry != null ? "解除" : "選択",
+            AdminUiStyle.ButtonBackground, AdminUiStyle.ButtonLabel,
+            () => ToggleSelectEntry(entry),
+            out row.selectLabel);
 
         return row;
     }
@@ -698,9 +738,14 @@ public class AdminUIManager : MonoBehaviour
     private void BeginQuitConfirm()
     {
         _quitAwaitingConfirm = true;
-        if (quitText   != null) quitText.text  = "確認?";
-        if (_quitImage != null) _quitImage.color = quitConfirmColor;
-        SetStatus("[WARN] Tap QUIT again to exit the application");
+        if (quitText != null) quitText.text = QuitConfirmLabel;
+
+        // 確認待ちは濃赤＋白文字。
+        // 以前は濃赤の上に暗い文字を載せていてコントラスト比 3.3:1 と
+        // このパネル中で最悪の読みにくさだった（＝一番読ませたい警告が一番読めない）
+        SetButtonColors(quitButton, quitText,
+                        AdminUiStyle.DangerArmedBackground, AdminUiStyle.DangerArmedLabel);
+        SetStatus("[WARN] もう一度［終了］を押すとアプリを終了します");
 
         StopQuitConfirmRoutine();
         _quitConfirmRoutine = StartCoroutine(QuitConfirmTimeout());
@@ -719,11 +764,14 @@ public class AdminUIManager : MonoBehaviour
         ResetQuitButton();
     }
 
+    // 通常時から薄赤にしてある。「押すと戻れない操作」であることを常に示すためで、
+    // 隣の［閉じる］（見た目を隠すだけ）と押し間違えないようにする狙いもある
     private void ResetQuitButton()
     {
         _quitAwaitingConfirm = false;
-        if (quitText   != null) quitText.text  = QuitNormalLabel;
-        if (_quitImage != null) _quitImage.color = _quitNormalColor;
+        if (quitText != null) quitText.text = QuitNormalLabel;
+        SetButtonColors(quitButton, quitText,
+                        AdminUiStyle.DangerBackground, AdminUiStyle.DangerLabel);
     }
 
     private void StopQuitConfirmRoutine()
@@ -737,10 +785,11 @@ public class AdminUIManager : MonoBehaviour
     private void RefreshRowStatus(TextMeshProUGUI label, FireworkEntry entry)
     {
         if (label == null) return;
+        // 暗いパネル地の上に載るので、緑も灰も暗い側ではなく明るい側の色を使う
         label.text = entry.isConverted
-            ? $"<color=#44ff88>Converted</color>\n{entry.particleData.particles.Length} pts"
-            : "<color=#888888>Not converted</color>";
-        label.fontSize = 11f;
+            ? $"<color={AdminUiStyle.StatusOkHex}>変換済み</color>\n{entry.particleData.particles.Length} 粒"
+            : $"<color={AdminUiStyle.StatusWarnHex}>未変換</color>";
+        label.fontSize = AdminUiStyle.RowFontMin;
     }
 
     // ── UI ヘルパー ──
@@ -763,7 +812,7 @@ public class AdminUIManager : MonoBehaviour
         return comp;
     }
 
-    private Button MakeButton(Transform parent, string label, Color bgColor,
+    private Button MakeButton(Transform parent, string label, Color bgColor, Color labelColor,
         System.Action onClick, out TextMeshProUGUI labelOut, float minWidth = ButtonMinWidth)
     {
         var go  = new GameObject($"Btn_{label}");
@@ -772,12 +821,12 @@ public class AdminUIManager : MonoBehaviour
         // 幅は固定せず「最小幅」として扱う。
         // preferredWidth を -1（未設定）にすると LayoutElement は幅を上書きせず、
         // 下の HorizontalLayoutGroup が算出する値（= ラベルの preferredWidth + padding）が
-        // 採用される。日本語ラベル（"確認?" "更新" など）でも切れずに伸びる。
+        // 採用される。日本語ラベル（"表示中" "解除" など）でも切れずに伸びる。
         var le  = go.AddComponent<LayoutElement>();
         le.minWidth        = minWidth;
         le.preferredWidth  = -1f;
-        le.minHeight       = ButtonHeight;
-        le.preferredHeight = ButtonHeight;
+        le.minHeight       = AdminUiStyle.RowButtonHeight;
+        le.preferredHeight = AdminUiStyle.RowButtonHeight;
 
         var img = go.AddComponent<Image>();
         img.color = bgColor;
@@ -801,27 +850,27 @@ public class AdminUIManager : MonoBehaviour
         var tmp     = textGO.AddComponent<TextMeshProUGUI>();
         tmp.text      = label;
         tmp.alignment = TextAlignmentOptions.Center;
-        // ツールバーのボタンと同じ濃紺寄りのダークグレーに揃える。
-        // 値は AdminUIBuilder.ButtonLabelColor と一致させること
-        //（片方だけ変えると一覧の行とツールバーで文字色が混在する）
-        tmp.color     = ButtonLabelColor;
+        // 背景色ごとに読める文字色が違うので、呼び出し側から受け取る。
+        // 組み合わせは AdminUiStyle が単一ソース（全て 4.5:1 以上）
+        tmp.color     = labelColor;
 
-        // 溢れ対策: 1行維持したままフォントを自動縮小する
+        // 溢れ対策: 1行維持したままフォントを自動縮小する。
+        // 以前は 8〜12pt で、遠目にはほぼ読めなかった
         tmp.textWrappingMode = TextWrappingModes.NoWrap;
         tmp.enableAutoSizing = true;
-        tmp.fontSizeMin      = buttonFontSizeMin;
-        tmp.fontSizeMax      = buttonFontSizeMax;
-        tmp.fontSize         = buttonFontSizeMax;
+        tmp.fontSizeMin      = AdminUiStyle.RowFontMin;
+        tmp.fontSizeMax      = AdminUiStyle.RowFontMax;
+        tmp.fontSize         = AdminUiStyle.RowFontMax;
 
         labelOut = tmp;
         return btn;
     }
 
     // overload（labelOut 不要な場合）
-    private Button MakeButton(Transform parent, string label, Color bgColor,
+    private Button MakeButton(Transform parent, string label, Color bgColor, Color labelColor,
         System.Action onClick, float minWidth = ButtonMinWidth)
     {
-        return MakeButton(parent, label, bgColor, onClick, out _, minWidth);
+        return MakeButton(parent, label, bgColor, labelColor, onClick, out _, minWidth);
     }
 
     // ── 宇宙モード ──
@@ -832,30 +881,28 @@ public class AdminUIManager : MonoBehaviour
     // マスターOFF中は4つとも [OFF] に見えてしまい、個別トグルが勝手にリセット
     // されたかのように誤解される（実際はマスターを戻せば元の組み合わせに戻る）ため。
 
+    // ON/OFF のトグル表示の共通処理。
+    // 「色が付いている＝有効」の規則をこの1箇所に閉じ込めてあるので、
+    // トグルを増やすときもここを通せば見た目が自動的に揃う
+    private void ApplyToggleVisual(Button button, TextMeshProUGUI label, string name, bool on)
+    {
+        if (label != null) label.text = $"{name} [{(on ? "ON" : "OFF")}]";
+        SetButtonColors(button, label,
+            on ? AdminUiStyle.OnBackground : AdminUiStyle.ButtonBackground,
+            on ? AdminUiStyle.OnLabel      : AdminUiStyle.ButtonLabel);
+    }
+
     private void OnSpaceModeClicked()
     {
         if (_spaceMode == null) return;
         _spaceMode.ToggleMaster();
         UpdateSpaceModeLabel();
-        UpdateSpaceToolbarVisibility();
         Debug.Log($"[AdminUI] SpaceMode: {(_spaceMode.MasterEnabled ? "ON" : "OFF")}");
     }
 
-    private void UpdateSpaceModeLabel()
-    {
-        if (spaceModeText == null) return;
-        spaceModeText.text = _spaceMode != null && _spaceMode.MasterEnabled ? "SPACE [ON]" : "SPACE [OFF]";
-    }
-
-    // 宇宙モードOFF中は4つの個別トグル行を隠す。
-    // spaceToolbar の親（AdminPanel）の VerticalLayoutGroup は非アクティブな子を
-    // 自動でスキップしてリフローするので、SetActive を切り替えるだけで見た目が崩れない
-    // （Destroy → 再生成にすると設定値やアサインが失われるので避ける）
-    private void UpdateSpaceToolbarVisibility()
-    {
-        if (spaceToolbar == null) return;
-        spaceToolbar.gameObject.SetActive(_spaceMode != null && _spaceMode.MasterEnabled);
-    }
+    private void UpdateSpaceModeLabel() =>
+        ApplyToggleVisual(spaceModeButton, spaceModeText, "宇宙モード",
+                          _spaceMode != null && _spaceMode.MasterEnabled);
 
     private void OnFrameToggleClicked()
     {
@@ -864,11 +911,9 @@ public class AdminUIManager : MonoBehaviour
         UpdateFrameToggleLabel();
     }
 
-    private void UpdateFrameToggleLabel()
-    {
-        if (frameToggleText == null) return;
-        frameToggleText.text = _spaceMode != null && _spaceMode.FrameSetting ? "FRAME [ON]" : "FRAME [OFF]";
-    }
+    private void UpdateFrameToggleLabel() =>
+        ApplyToggleVisual(frameToggleButton, frameToggleText, "宇宙船フレーム",
+                          _spaceMode != null && _spaceMode.FrameSetting);
 
     private void OnUfoToggleClicked()
     {
@@ -877,11 +922,9 @@ public class AdminUIManager : MonoBehaviour
         UpdateUfoToggleLabel();
     }
 
-    private void UpdateUfoToggleLabel()
-    {
-        if (ufoToggleText == null) return;
-        ufoToggleText.text = _spaceMode != null && _spaceMode.UfoSetting ? "UFO [ON]" : "UFO [OFF]";
-    }
+    private void UpdateUfoToggleLabel() =>
+        ApplyToggleVisual(ufoToggleButton, ufoToggleText, "UFO",
+                          _spaceMode != null && _spaceMode.UfoSetting);
 
     private void OnHanabiModeClicked()
     {
@@ -890,21 +933,29 @@ public class AdminUIManager : MonoBehaviour
         UpdateHanabiModeLabel();
     }
 
+    // 3値の enum なので bool のトグルとは見た目を変える。
+    // 「和風のみ」＝宇宙要素なしの既定状態なので通常ボタンと同じ白、
+    // 混合＝薄緑、宇宙のみ＝薄紫。並んでいる ON/OFF トグルと取り違えないための区別
     private void UpdateHanabiModeLabel()
     {
-        if (hanabiModeText == null) return;
         if (_spaceMode == null)
         {
-            hanabiModeText.text = "HANABI [N/A]";
+            if (hanabiModeText != null) hanabiModeText.text = "花火の種類  ―";
             return;
         }
 
-        hanabiModeText.text = _spaceMode.FireworkSetting switch
+        var (name, bg, fg) = _spaceMode.FireworkSetting switch
         {
-            SpaceModeController.SpaceFireworkMode.Mix       => "HANABI [MIX]",
-            SpaceModeController.SpaceFireworkMode.SpaceOnly => "HANABI [SPACE]",
-            _                                                => "HANABI [OFF]",
+            SpaceModeController.SpaceFireworkMode.Mix       =>
+                ("混合",   AdminUiStyle.EnumMixBackground,   AdminUiStyle.EnumMixLabel),
+            SpaceModeController.SpaceFireworkMode.SpaceOnly =>
+                ("宇宙のみ", AdminUiStyle.EnumSpaceBackground, AdminUiStyle.EnumSpaceLabel),
+            _                                               =>
+                ("和風のみ", AdminUiStyle.ButtonBackground,    AdminUiStyle.ButtonLabel),
         };
+
+        if (hanabiModeText != null) hanabiModeText.text = $"花火の種類 [{name}]";
+        SetButtonColors(hanabiModeButton, hanabiModeText, bg, fg);
     }
 
     private void OnSfxToggleClicked()
@@ -914,139 +965,198 @@ public class AdminUIManager : MonoBehaviour
         UpdateSfxToggleLabel();
     }
 
-    private void UpdateSfxToggleLabel()
+    private void UpdateSfxToggleLabel() =>
+        ApplyToggleVisual(sfxToggleButton, sfxToggleText, "宇宙効果音",
+                          _spaceMode != null && _spaceMode.SpaceAudioSetting);
+
+    // ── タブ ──
+    //
+    // 3枚のうち1枚だけを SetActive(true) にする。親（AdminPanel）の
+    // VerticalLayoutGroup は非アクティブな子を自動でスキップしてリフローするので、
+    // SetActive の切替だけで見た目が崩れない
+    // （Destroy → 再生成にすると設定値やアサインが失われるので避ける）。
+    //
+    // 宇宙タブを「宇宙モードON中だけ」にしていない理由:
+    //   個別スイッチ（フレーム/UFO/花火の種類/効果音）の設定値はマスターとは
+    //   独立に保存される（SpaceModeController の Setting/Enabled 分離）。
+    //   マスターOFF中に仕込んでおけると開演前の準備が楽なので、常に開けるようにした。
+    private void SwitchTab(AdminTab tab)
     {
-        if (sfxToggleText == null) return;
-        sfxToggleText.text = _spaceMode != null && _spaceMode.SpaceAudioSetting ? "SFX [ON]" : "SFX [OFF]";
+        _activeTab = tab;
+
+        if (tabBasicPage != null) tabBasicPage.gameObject.SetActive(tab == AdminTab.Basic);
+        if (tabSpacePage != null) tabSpacePage.gameObject.SetActive(tab == AdminTab.Space);
+        if (tabTunePage  != null) tabTunePage .gameObject.SetActive(tab == AdminTab.Tune);
+
+        ApplyTabVisual(tabBasicButton, tabBasicText, tab == AdminTab.Basic);
+        ApplyTabVisual(tabSpaceButton, tabSpaceText, tab == AdminTab.Space);
+        ApplyTabVisual(tabTuneButton,  tabTuneText,  tab == AdminTab.Tune);
+
+        if (tabHelpText != null)
+        {
+            tabHelpText.text = tab switch
+            {
+                AdminTab.Space => "宇宙モードONで枠・UFO・宇宙花火が有効。個別スイッチはOFF中も保存されます",
+                AdminTab.Tune  => "右へ動かすほど反応しにくくなります（誤発火を減らしたいときは右へ）",
+                _              => "テスト打上=花火を1発試す ／ 丸窓=映像をドーム型に切り抜く表示",
+            };
+        }
     }
 
-    // ── 設定（ジェスチャー感度・花火の出し方）──
+    // 選択中は濃紺＋白文字、非選択は白＋濃紺文字。
+    // 「色が付いている＝今ここ」という規則をトグル（ON=緑）と揃えている
+    private static void ApplyTabVisual(Button button, TextMeshProUGUI label, bool selected)
+    {
+        SetButtonColors(button, label,
+            selected ? AdminUiStyle.TabSelectedBackground : AdminUiStyle.ButtonBackground,
+            selected ? AdminUiStyle.TabSelectedLabel      : AdminUiStyle.ButtonLabel);
+    }
+
+    // ボタンの背景色とラベル色をまとめて塗る共通処理。
+    // Image.color を直に触ると Button の遷移（Normal色）と食い違うので、
+    // ColorBlock 側も一緒に更新する
+    private static void SetButtonColors(Button button, TextMeshProUGUI label, Color bg, Color fg)
+    {
+        if (button != null)
+        {
+            var image = button.targetGraphic as Image ?? button.GetComponent<Image>();
+            if (image != null) image.color = bg;
+
+            var colors = button.colors;
+            colors.normalColor    = Color.white;   // Image.color に対する乗算なので白＝そのまま
+            colors.disabledColor  = AdminUiStyle.DisabledBackground;
+            button.colors = colors;
+        }
+
+        if (label != null) label.color = fg;
+    }
+
+    // ── 検出の調整タブ（スライダー）──
     //
     // ビルド後は Unity Editor に一切触れない運用を前提にしたパネル。
     // 会場・客層・投稿写真の状況で変えたくなる値をここに集約している。
-    // SETTINGSボタンで行の開閉だけを切り替える（宇宙モードの SpaceToolbar と
-    // 同じ考え方だが、こちらは「効き目」を持たない純粋な表示トグルなので
-    // 永続化はしない）。個々の値自体（ジェスチャー感度・花火比率）は
-    // GestureDetector / FireworkLauncher 側で PlayerPrefs に永続化される
-
-    private void OnSettingsModeClicked()
+    // 個々の値自体は GestureDetector / FireworkLauncher / PoseLandmarkDetector 側で
+    // PlayerPrefs に永続化されるので、ここは「触って値を書く」だけでよい。
+    //
+    // min/max/wholeNumbers は AdminUIBuilder が設定する（生成側の責務）。
+    // ここで初期値を入れるときに SetValueWithoutNotify を使うのは、
+    // onValueChanged が発火して「読んだ値をそのまま書き戻す」無駄な往復
+    // （＝起動のたびに PlayerPrefs へ Save が走る）を避けるため。
+    private void WireSliders()
     {
-        _settingsToolbarVisible = !_settingsToolbarVisible;
-        UpdateSettingsModeLabel();
-        UpdateSettingsToolbarVisibility();
-    }
-
-    private void UpdateSettingsModeLabel()
-    {
-        if (settingsModeText == null) return;
-        settingsModeText.text = _settingsToolbarVisible ? "SETTINGS [ON]" : "SETTINGS [OFF]";
-    }
-
-    private void UpdateSettingsToolbarVisibility()
-    {
-        if (settingsToolbar == null) return;
-        settingsToolbar.gameObject.SetActive(_settingsToolbarVisible);
-    }
-
-    // 現在値に一番近いプリセットの「次」を返す（末尾なら先頭へ戻る）。
-    // 完全一致を要求しないのは、PlayerPrefs 経由で復元された値や Inspector で
-    // 直接入れた値がプリセット外でも、そこから自然に巡回を始められるようにするため
-    private static float NextPreset(float[] presets, float current)
-    {
-        int nearest = 0;
-        float bestDiff = float.MaxValue;
-        for (int i = 0; i < presets.Length; i++)
+        if (_gesture != null)
         {
-            float diff = Mathf.Abs(presets[i] - current);
-            if (diff < bestDiff) { bestDiff = diff; nearest = i; }
+            InitSlider(handUpSlider,   _gesture.HandUpThreshold,  v => { _gesture.HandUpThreshold  = v; UpdateHandUpLabel();   });
+            InitSlider(jumpSlider,     _gesture.JumpThreshold,    v => { _gesture.JumpThreshold    = v; UpdateJumpLabel();     });
+            InitSlider(cooldownSlider, _gesture.GestureCooldown,  v => { _gesture.GestureCooldown  = v; UpdateCooldownLabel(); });
+            InitSlider(holdSlider,     _gesture.PoseHoldDuration, v => { _gesture.PoseHoldDuration = v; UpdateHoldLabel();     });
         }
-        return presets[(nearest + 1) % presets.Length];
+
+        // 画像花火の割合だけはプロパティが 0〜1 なのに対しスライダーは 0〜100（整数）。
+        // 「50%」と表示したいのに 0.5 刻みのスライダーは触りにくいため、
+        // UI 側を百分率にして、ここで換算している
+        if (_launcher != null)
+            InitSlider(imgChanceSlider, _launcher.ImageFireworkChance * 100f,
+                       v => { _launcher.ImageFireworkChance = v / 100f; UpdateImgChanceLabel(); });
+
+        // 人物検出だけは即時適用しない（PoseLandmarker の作り直しが走るため）。
+        // ラベルはドラッグに追従させ、実際の適用は ApplyPendingPersonConfidence に任せる
+        if (_poseDetector != null)
+            InitSlider(personConfSlider, _poseDetector.PersonConfidence, v =>
+            {
+                _personConfPending      = true;
+                _personConfPendingValue = v;
+                UpdatePersonConfLabel(v);
+            });
+
+        UpdateHandUpLabel();
+        UpdateJumpLabel();
+        UpdateCooldownLabel();
+        UpdateHoldLabel();
+        UpdateImgChanceLabel();
+        UpdatePersonConfLabel();
     }
 
-    private void OnHandUpClicked()
+    private static void InitSlider(Slider slider, float initialValue, UnityEngine.Events.UnityAction<float> onChanged)
     {
-        if (_gesture == null) return;
-        _gesture.HandUpThreshold = NextPreset(HandUpPresets, _gesture.HandUpThreshold);
-        UpdateHandUpLabel();
+        if (slider == null) return;
+        slider.SetValueWithoutNotify(Mathf.Clamp(initialValue, slider.minValue, slider.maxValue));
+        slider.onValueChanged.AddListener(onChanged);
+    }
+
+    // 人物検出の遅延適用。マウスの左ボタンが離れたフレームで1回だけ適用する。
+    // ドラッグ中に適用すると MediaPipe の PoseLandmarker を毎フレーム作り直して
+    // 映像が固まるため（作り直し自体は数十msだが、毎フレームだと止まって見える）。
+    private void ApplyPendingPersonConfidence()
+    {
+        if (!_personConfPending || _poseDetector == null) return;
+
+        // 新 Input System 専用プロジェクトなので Input.GetMouseButton は使えない。
+        // マウスが無い環境（タッチ等）では押しっぱなし判定ができないので、即時適用に倒す
+        var mouse = Mouse.current;
+        if (mouse != null && mouse.leftButton.isPressed) return;
+
+        _personConfPending = false;
+        _poseDetector.PersonConfidence = _personConfPendingValue;
+        UpdatePersonConfLabel();
+        SetStatus($"[OK] 人物検出のきびしさ: {_poseDetector.PersonConfidence:F2}");
     }
 
     private void UpdateHandUpLabel()
     {
         if (handUpText == null) return;
-        handUpText.text = _gesture != null ? $"HAND [{_gesture.HandUpThreshold:F2}]" : "HAND [N/A]";
-    }
-
-    // 人として検出するのに必要な確信度。
-    // ジェスチャーの閾値が「検出できた人が手を上げたか」の判定なのに対し、
-    // こちらは「そもそも人として拾うか」の手前の段階を絞る
-    private void OnPersonConfClicked()
-    {
-        if (_poseDetector == null) return;
-        _poseDetector.PersonConfidence = NextPreset(PersonConfPresets, _poseDetector.PersonConfidence);
-        UpdatePersonConfLabel();
-        SetStatus($"[OK] 人の検出閾値: {_poseDetector.PersonConfidence:F2}");
-    }
-
-    private void UpdatePersonConfLabel()
-    {
-        if (personConfText == null) return;
-        personConfText.text = _poseDetector != null
-            ? $"PERSON [{_poseDetector.PersonConfidence:F2}]"
-            : "PERSON [N/A]";
-    }
-
-    private void OnJumpClicked()
-    {
-        if (_gesture == null) return;
-        _gesture.JumpThreshold = NextPreset(JumpPresets, _gesture.JumpThreshold);
-        UpdateJumpLabel();
+        handUpText.text = _gesture != null
+            ? $"手上げ判定のきびしさ  {_gesture.HandUpThreshold:F2}（肩幅比）"
+            : "手上げ判定のきびしさ  ―";
     }
 
     private void UpdateJumpLabel()
     {
         if (jumpText == null) return;
-        jumpText.text = _gesture != null ? $"JUMP [{_gesture.JumpThreshold:F2}]" : "JUMP [N/A]";
-    }
-
-    private void OnCooldownClicked()
-    {
-        if (_gesture == null) return;
-        _gesture.GestureCooldown = NextPreset(CooldownPresets, _gesture.GestureCooldown);
-        UpdateCooldownLabel();
+        jumpText.text = _gesture != null
+            ? $"ジャンプ判定のきびしさ  {_gesture.JumpThreshold:F2}（肩幅比）"
+            : "ジャンプ判定のきびしさ  ―";
     }
 
     private void UpdateCooldownLabel()
     {
         if (cooldownText == null) return;
-        cooldownText.text = _gesture != null ? $"COOLDOWN [{_gesture.GestureCooldown:F1}s]" : "COOLDOWN [N/A]";
-    }
-
-    private void OnHoldClicked()
-    {
-        if (_gesture == null) return;
-        _gesture.PoseHoldDuration = NextPreset(HoldPresets, _gesture.PoseHoldDuration);
-        UpdateHoldLabel();
+        cooldownText.text = _gesture != null
+            ? $"連発防止の間隔  {_gesture.GestureCooldown:F1}秒"
+            : "連発防止の間隔  ―";
     }
 
     private void UpdateHoldLabel()
     {
         if (holdText == null) return;
-        holdText.text = _gesture != null ? $"HOLD [{_gesture.PoseHoldDuration:F1}s]" : "HOLD [N/A]";
-    }
-
-    private void OnImgChanceClicked()
-    {
-        if (_launcher == null) return;
-        _launcher.ImageFireworkChance = NextPreset(ImageChancePresets, _launcher.ImageFireworkChance);
-        UpdateImgChanceLabel();
+        holdText.text = _gesture != null
+            ? $"ポーズの保持時間  {_gesture.PoseHoldDuration:F1}秒"
+            : "ポーズの保持時間  ―";
     }
 
     private void UpdateImgChanceLabel()
     {
         if (imgChanceText == null) return;
         imgChanceText.text = _launcher != null
-            ? $"IMG% [{Mathf.RoundToInt(_launcher.ImageFireworkChance * 100)}]"
-            : "IMG% [N/A]";
+            ? $"画像花火の割合  {Mathf.RoundToInt(_launcher.ImageFireworkChance * 100f)}%"
+            : "画像花火の割合  ―";
+    }
+
+    // 人として検出するのに必要な確信度。
+    // ジェスチャーの閾値が「検出できた人が手を上げたか」の判定なのに対し、
+    // こちらは「そもそも人として拾うか」の手前の段階を絞る。
+    //
+    // 引数ありの版はドラッグ中の表示用（まだ適用していない値を出す）。
+    // 引数なしの版は適用後の実値を出す
+    private void UpdatePersonConfLabel() =>
+        UpdatePersonConfLabel(_poseDetector != null ? _poseDetector.PersonConfidence : 0f);
+
+    private void UpdatePersonConfLabel(float value)
+    {
+        if (personConfText == null) return;
+        personConfText.text = _poseDetector != null
+            ? $"人物検出のきびしさ  {value:F2}"
+            : "人物検出のきびしさ  ―";
     }
 
     // 比率スライダーと違い、こちらは即座に「画像花火を一切出さない」緊急スイッチ。
@@ -1058,19 +1168,15 @@ public class AdminUIManager : MonoBehaviour
         UpdateImgEnableLabel();
     }
 
-    private void UpdateImgEnableLabel()
-    {
-        if (imgEnableText == null) return;
-        imgEnableText.text = _launcher != null
-            ? (_launcher.EnableImageFirework ? "IMG [ON]" : "IMG [OFF]")
-            : "IMG [N/A]";
-    }
+    private void UpdateImgEnableLabel() =>
+        ApplyToggleVisual(imgEnableButton, imgEnableText, "画像花火",
+                          _launcher != null && _launcher.EnableImageFirework);
 
-    // カメラ映像を画面中央の丸に収める演出のトグル。
+    // カメラ映像を画面下部の半楕円ドームに収める演出のトグル。
     //
     // CameraCircleMatte は Main Camera へ自動アタッチされるので、ここでは
     // 見つけて叩くだけ。OFF にすると同コンポーネントが控えておいた元の値
-    // （カメラのClearFlags・背景Quadのscale・骨格の表示）をすべて復元するので、
+    // （カメラのClearFlags・背景Quadのscale/position）を復元するので、
     // ビルドし直さずに現場で「あり/なし」を見比べられる
     private void OnMatteClicked()
     {
@@ -1088,13 +1194,32 @@ public class AdminUIManager : MonoBehaviour
 
     private void UpdateMatteLabel()
     {
-        if (matteText == null) return;
-
         var matte = ResolveMatte();
-        matteText.text = matte != null
-            ? (matte.MatteEnabled ? "MATTE [ON]" : "MATTE [OFF]")
-            : "MATTE [N/A]";
+        ApplyToggleVisual(matteButton, matteText, "丸窓モード", matte != null && matte.MatteEnabled);
     }
+
+    // ── 骨格（ボーン）の表示トグル ──
+    //
+    // 丸窓モードとは独立した設定。以前はドーム化が骨格を強制的に隠していたが、
+    // 「ドーム中でも認識されている人のボーンは見せたい」という運用要望で切り離した。
+    // 表示状態は SkeletonRenderer 自身が PlayerPrefs に永続化するので、
+    // ここは ShowSkeleton を反転するだけでよい
+    private void OnSkeletonClicked()
+    {
+        if (_skeleton == null)
+        {
+            SetStatus("[WARN] SkeletonRenderer が見つかりません");
+            return;
+        }
+
+        _skeleton.ShowSkeleton = !_skeleton.ShowSkeleton;
+        UpdateSkeletonLabel();
+        Debug.Log($"[AdminUI] Skeleton: {(_skeleton.ShowSkeleton ? "ON" : "OFF")}");
+    }
+
+    private void UpdateSkeletonLabel() =>
+        ApplyToggleVisual(skeletonButton, skeletonText, "ボーン表示",
+                          _skeleton != null && _skeleton.ShowSkeleton);
 
     // Main Camera への自動アタッチは AfterSceneLoad で走るので、AdminUIManager.Start()
     // の時点では間に合っていない可能性がある。毎回探し直して見つかった時点でキャッシュする
@@ -1130,7 +1255,7 @@ public class AdminUIManager : MonoBehaviour
         // 切替はコルーチンなので、この時点のラベルはまだ確定値ではない。
         // 確定値は SyncCameraIndexLabel() が次のフレーム以降に反映する
         UpdateCameraIndexLabel();
-        SetStatus($"カメラ切替: {CameraLabelText()}");
+        SetStatus($"[OK] {CameraLabelText()}");
     }
 
     // 切替が非同期に完了するため、毎フレーム実際の状態と突き合わせる。
@@ -1168,20 +1293,67 @@ public class AdminUIManager : MonoBehaviour
         cameraIndexText.text = CameraLabelText();
     }
 
-    // 例: "CAM [2/4] HD Webcam"。切替中は index の代わりに "..." を出す
+    // 例: "カメラ切替 [2/4] HD Webcam"。切替中は index の代わりに "..." を出す
     private string CameraLabelText()
     {
-        if (cameraBackground == null) return "CAM [N/A]";
+        if (cameraBackground == null) return "カメラ切替 [―]";
 
-        if (cameraBackground.IsSwitching) return "CAM [...] 切替中";
+        if (cameraBackground.IsSwitching) return "カメラ切替 [...] 切替中";
 
-        return $"CAM [{cameraBackground.CurrentIndex}/{cameraBackground.DeviceCount}] " +
+        return $"カメラ切替 [{cameraBackground.CurrentIndex}/{cameraBackground.DeviceCount}] " +
                $"{cameraBackground.CurrentDeviceName}";
     }
 
+    // ── ステータス表示 ──
+    //
+    // 接頭辞（[OK] / [WARN] / [ERROR] / [LAUNCH]）を見つけたら rich text で色を付ける。
+    // ここ1箇所を通すだけで全メッセージに効くので、呼び出し側は今までどおり
+    // 素の文字列を渡せばよい。色は AdminUiStyle（暗いパネル地の上で 7:1 以上）。
+    //
+    // ログには色タグの付かない元の文字列を出す（Console で読みにくくなるため）
     private void SetStatus(string msg)
     {
-        if (statusText != null) statusText.text = msg;
+        if (statusText != null) statusText.text = Colorize(msg);
         Debug.Log($"[AdminUI] {msg}");
+    }
+
+    private static string Colorize(string msg)
+    {
+        if (string.IsNullOrEmpty(msg) || msg.Length == 0 || msg[0] != '[') return msg;
+
+        int close = msg.IndexOf(']');
+        if (close < 0) return msg;
+
+        string tag = msg.Substring(0, close + 1);
+        string hex = tag switch
+        {
+            "[OK]"     => AdminUiStyle.StatusOkHex,
+            "[WARN]"   => AdminUiStyle.StatusWarnHex,
+            "[ERROR]"  => AdminUiStyle.StatusErrorHex,
+            "[LAUNCH]" => AdminUiStyle.StatusLaunchHex,
+            _          => null,
+        };
+
+        return hex == null ? msg : $"<color={hex}>{tag}</color>{msg.Substring(close + 1)}";
+    }
+
+    // 件数はステータス行ではなくタブ行の右端に常設する。
+    // 以前は RefreshList が毎回 SetStatus("Entries: N ...") を呼んでいたため、
+    // 更新完了やエラーの通知が読む前に件数で上書きされて消えていた
+    private void UpdateEntryCountLabel()
+    {
+        if (entryCountText == null) return;
+
+        if (_manager == null)
+        {
+            entryCountText.text = "全― 件";
+            return;
+        }
+
+        int total  = _manager.Entries.Count;
+        int active = 0;
+        foreach (var e in _manager.Entries) if (e.isActive) active++;
+
+        entryCountText.text = $"全{total}件 / 有効{active}件";
     }
 }
