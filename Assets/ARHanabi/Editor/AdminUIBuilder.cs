@@ -450,6 +450,12 @@ public static class AdminUIBuilder
             label.alignment        = TextAlignmentOptions.Center;
             label.textWrappingMode = TextWrappingModes.NoWrap;
             label.color            = AdminUiStyle.ButtonLabel;
+
+            // StyleButton を通らない経路なので、既定ラベルもここで入れ直す
+            // （実行時にこのボタンのラベルを書き換える処理は無いため、
+            //   ここで入れないと "OPEN" のまま日本語にならない）
+            if (ToolbarButtonInitialLabel.TryGetValue("OpenTabButton", out var openLabel))
+                label.text = openLabel;
         }
 
         // カメラ映像の上に単独で浮かぶボタンなので、地の色は明示しておく
@@ -1182,9 +1188,20 @@ public static class AdminUIBuilder
         t.gameObject.SetActive(active);
     }
 
-    // ボタンをタブページ / ヘッダー用に整える。ラベルの文字列は content なので変更しない。
+    // ボタンをタブページ / ヘッダー用に整える。
     // background / labelColor は省略すると通常ボタンの配色（白地＋暗紺文字）になる。
-    // 終了ボタンだけが Danger 系を指定して呼ぶ
+    // 終了ボタンだけが Danger 系を指定して呼ぶ。
+    //
+    // ── ラベルの文字列もここで揃える理由 ──
+    //   以前は「文字列は content なので Builder は触らない」方針で、
+    //   ToolbarButtonInitialLabel を新規作成時にしか適用していなかった。
+    //   その結果、日本語化のあとに再構築しても既に存在するボタン
+    //   （QuitButton / CloseButton / TestLaunchButton / RefreshButton / OpenTabButton）は
+    //   "QUIT" "Close" "Test Launch" のまま英語で残ってしまった。
+    //   実行時にラベルを書き換えるのは状態を持つトグル類だけなので、
+    //   これらは永久に英語のままになる（＝日本語化が効かない）。
+    //   状態つきのボタンは AdminUIManager が Start() で上書きするため、
+    //   ここで一律に既定ラベルを入れても衝突しない
     private static void StyleButton(Transform btn, float minWidth, float height, bool flexible,
                                     Color? background = null, Color? labelColor = null)
     {
@@ -1218,12 +1235,14 @@ public static class AdminUIBuilder
         label.textWrappingMode = TextWrappingModes.NoWrap;
         label.overflowMode     = TextOverflowModes.Ellipsis;
 
-        // 文字色もここで統一する。
-        // 「文字列は content なので変更しない」方針は保つが、色は見た目（style）なので
-        // このメソッドの担当。ここで塗ることで、既にシーンに存在するボタンも
+        // 文字色もここで統一する。ここで塗ることで、既にシーンに存在するボタンも
         // 再構築のたびに揃う（新規作成時だけ色を入れていると、既存ボタンは
         // 白のまま取り残される）。
         label.color = labelColor ?? AdminUiStyle.ButtonLabel;
+
+        // 既定ラベルも同じ理由で毎回入れ直す（英語のまま取り残されるのを防ぐ）
+        if (ToolbarButtonInitialLabel.TryGetValue(btn.name, out var initial) && label.text != initial)
+            label.text = initial;
     }
 
     // ボタンの地の色と、押下/無効時の色の振れ幅を決める。
