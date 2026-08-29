@@ -42,6 +42,12 @@ public class PoseLandmarkDetector : MonoBehaviour
     [Tooltip("同時に検出する人数の上限")]
     [SerializeField] private int maxPeople = 5;
 
+    [Tooltip("人として検出するのに必要な確信度（0〜1、MediaPipe既定 0.5）。\n" +
+             "上げるほど「人らしくないもの」を人と誤検知しにくくなるが、\n" +
+             "遠い人・暗い場所の人・半分見切れている人は検出されなくなる。\n" +
+             "展示会場の背景に人型のポスターや人形がある場合はここを上げる")]
+    [SerializeField, Range(0.1f, 0.95f)] private float personConfidence = 0.5f;
+
     [Header("依存コンポーネント")]
     [Tooltip("ジェスチャー判定を行うコンポーネント")]
     [SerializeField] private GestureDetector gestureDetector;
@@ -69,6 +75,8 @@ public class PoseLandmarkDetector : MonoBehaviour
     // ── 内部状態 ──
     private WebCamTexture  _webCamTexture;
     private PoseLandmarker _poseLandmarker;
+    // 閾値変更時に PoseLandmarker を作り直すために保持しておくモデルのバイト列
+    private byte[]         _modelData;
     private Texture2D      _inputTexture;
     private PoseTracker    _tracker;
 
@@ -108,6 +116,11 @@ public class PoseLandmarkDetector : MonoBehaviour
     // （ProcessLatestResult は初期化コルーチンの完了前にも Update から呼ばれる）
     private void Awake()
     {
+        // Admin画面で調整した検出閾値を引き継ぐ。
+        // BuildLandmarker より先に読んでおけば、初回生成からこの値が使われる
+        personConfidence = SettingsStore.GetFloat(
+            $"{nameof(PoseLandmarkDetector)}.{nameof(personConfidence)}", personConfidence);
+
         _tracker = new PoseTracker(trackerSettings);
 
         _onTrackLost = id =>
@@ -161,16 +174,66 @@ public class PoseLandmarkDetector : MonoBehaviour
         var modelData = System.IO.File.ReadAllBytes(modelPath);
         ArLog.Info($"[Pose] モデル読み込み成功: {modelData.Length} bytes");
 
+        // 再生成のためにモデルのバイト列を保持しておく。
+        // 閾値を変えるたびにファイルを読み直すのは無駄なうえ、
+        // 展示中に I/O で引っかかると目に見えて止まる
+        _modelData = modelData;
+        BuildLandmarker();
+        yield return null;
+    }
+
+    // PoseLandmarker を現在の設定で作り直す。
+    //
+    // ── なぜ「作り直し」なのか ──
+    //   MediaPipe の PoseLandmarkerOptions は生成時にしか渡せず、
+    //   後から minPoseDetectionConfidence を差し替える API が無い。
+    //   そのため閾値を変える＝作り直しになる。
+    //   生成は数十msかかるので毎フレーム呼んではいけない
+    //   （Admin画面のボタンを押したときだけ呼ぶ）。
+    private void BuildLandmarker()
+    {
+        if (_modelData == null)
+        {
+            ArLog.Warn("[Pose] モデル未読み込みのため PoseLandmarker を生成できません");
+            return;
+        }
+
+        // 古いものは必ず閉じる。閉じずに捨てるとネイティブ側のリソースが残る
+        _poseLandmarker?.Close();
+
         var options = new PoseLandmarkerOptions(
-            new BaseOptions(modelAssetBuffer: modelData),
+            new BaseOptions(modelAssetBuffer: _modelData),
             runningMode: RunningMode.LIVE_STREAM,
             numPoses: maxPeople,
+            minPoseDetectionConfidence: personConfidence,
+            minPosePresenceConfidence:  personConfidence,
+            minTrackingConfidence:      personConfidence,
             resultCallback: OnPoseDetected
         );
 
         _poseLandmarker = PoseLandmarker.CreateFromOptions(options);
-        ArLog.Info("[Pose] PoseLandmarker初期化完了");
-        yield return null;
+        ArLog.Info($"[Pose] PoseLandmarker初期化完了（人の検出閾値 {personConfidence:F2} / 最大{maxPeople}人）");
+    }
+
+    /// <summary>
+    /// 人として検出するのに必要な確信度。Admin画面から調整する。
+    /// setter は PoseLandmarker を作り直すので、毎フレーム呼んではいけない。
+    /// </summary>
+    public float PersonConfidence
+    {
+        get => personConfidence;
+        set
+        {
+            float v = Mathf.Clamp(value, 0.1f, 0.95f);
+            if (Mathf.Approximately(personConfidence, v)) return;
+
+            personConfidence = v;
+            SettingsStore.SetFloat($"{nameof(PoseLandmarkDetector)}.{nameof(personConfidence)}", v);
+
+            // 初期化前（モデル未読み込み）に触られても、後の BuildLandmarker が
+            // 新しい値を読むので取りこぼさない
+            if (_modelData != null) BuildLandmarker();
+        }
     }
 
     private void OnDestroy()
