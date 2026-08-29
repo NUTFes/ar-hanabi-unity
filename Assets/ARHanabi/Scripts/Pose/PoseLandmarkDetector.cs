@@ -120,6 +120,8 @@ public class PoseLandmarkDetector : MonoBehaviour
         // BuildLandmarker より先に読んでおけば、初回生成からこの値が使われる
         personConfidence = SettingsStore.GetFloat(
             $"{nameof(PoseLandmarkDetector)}.{nameof(personConfidence)}", personConfidence);
+        maxPeople = Mathf.Clamp(SettingsStore.GetInt(
+            $"{nameof(PoseLandmarkDetector)}.{nameof(maxPeople)}", maxPeople), MinPeople, MaxPeopleLimit);
 
         _tracker = new PoseTracker(trackerSettings);
 
@@ -232,6 +234,35 @@ public class PoseLandmarkDetector : MonoBehaviour
 
             // 初期化前（モデル未読み込み）に触られても、後の BuildLandmarker が
             // 新しい値を読むので取りこぼさない
+            if (_modelData != null) BuildLandmarker();
+        }
+    }
+
+    // 同時検出人数の実用域。
+    // 1未満だと誰も検出されず機能が死ぬ。上限を10で切っているのは、
+    // numPoses に比例して1フレームの推論時間が伸びるため
+    // （MediaPipe は人数ぶんランドマーク推論を回す）。
+    // 会場で10人を同時に拾える画角なら、そもそも1人あたりが小さすぎて
+    // ジェスチャー判定が安定しない、という実務上の理由もある。
+    public const int MinPeople      = 1;
+    public const int MaxPeopleLimit = 10;
+
+    /// <summary>
+    /// 同時に検出する人数の上限。Admin画面から調整する。
+    /// PersonConfidence と同じく setter が PoseLandmarker を作り直すので、
+    /// 毎フレーム呼んではいけない（スライダーはドラッグ終了時にだけ適用すること）。
+    /// </summary>
+    public int MaxPeople
+    {
+        get => maxPeople;
+        set
+        {
+            int v = Mathf.Clamp(value, MinPeople, MaxPeopleLimit);
+            if (maxPeople == v) return;
+
+            maxPeople = v;
+            SettingsStore.SetInt($"{nameof(PoseLandmarkDetector)}.{nameof(maxPeople)}", v);
+
             if (_modelData != null) BuildLandmarker();
         }
     }

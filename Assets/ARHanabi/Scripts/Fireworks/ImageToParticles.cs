@@ -44,12 +44,22 @@ public class ImageToParticles : IDisposable
 
     // ── 変換 ──
 
-    public ParticleData Convert(Texture2D src)
+    /// <summary>設定に入っている解像度で変換する。</summary>
+    public ParticleData Convert(Texture2D src) => Convert(src, _s.resolution);
+
+    /// <summary>
+    /// 解像度を明示して変換する。
+    /// 花火は1件ごとに細かさを変えられるので、設定の resolution を書き換えて
+    /// 元に戻す（という状態を持つやり方）ではなく、引数で受け取る形にしている。
+    /// 中間バッファは解像度が変わったときだけ作り直されるため、
+    /// 細かさの違う花火が混ざっていても余分な確保は起きない（GetWorkTexture 参照）。
+    /// </summary>
+    public ParticleData Convert(Texture2D src, int resolution)
     {
         if (_disposed)
             throw new ObjectDisposedException(nameof(ImageToParticles));
 
-        int n = _s.resolution;
+        int n = Mathf.Max(1, resolution);
 
         var rt = RenderTexture.GetTemporary(n, n, 0, RenderTextureFormat.ARGB32);
         rt.filterMode = FilterMode.Bilinear;
