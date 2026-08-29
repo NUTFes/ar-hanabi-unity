@@ -62,14 +62,6 @@ public class FireworkManager : MonoBehaviour
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
 
-        // 画像花火の細かさは Admin画面から変えられる運用設定なので、
-        // 展示が複数日にまたがっても引き継げるよう PlayerPrefs から復元する。
-        // キーが無い＝一度も触っていない場合は Inspector の値がそのまま使われる
-        conversionSettings.resolution = SettingsStore.GetInt(
-            $"{nameof(FireworkManager)}.imageResolution", conversionSettings.resolution);
-
-        // ImageToParticles は settings を参照で持つので、以後 resolution を書き換えれば
-        // そのまま次の変換に効く（作り直す必要はない）
         _converter = new ImageToParticles(conversionSettings);
     }
 
@@ -167,76 +159,41 @@ public class FireworkManager : MonoBehaviour
     // 粒のサイズは ImageFireworkEffect が data.width から導出するため、
     // n を変えても粒が隙間だらけ／団子になることはなく、見た目は自動で追従する。
     //
-    // ── 変えたら作り直しが要る理由 ──
-    //   ParticleData は取得時に一度だけ焼いてエントリに持たせている。
-    //   n を変えても、既に変換済みのエントリは古い細かさのまま残るので、
-    //   設定を変えた時点で作り直さないと「次に取ってきた花火だけ細かい」ことになる。
-    public int ImageResolution => conversionSettings.resolution;
+    // 細かさは1件ごとに持つ（FireworkEntry.resolution）。
+    // 絵によって最適な細かさが違う——文字や線画は細かく、面で塗った絵は粗くしたほうが
+    // 花火らしく見える——ので、全体で1つの値を共有する形にはしていない。
+    // 未設定（0）のエントリは下記の既定値で焼く。
+
+    /// <summary>細かさが未設定のエントリを焼くときに使う既定値（Inspector 由来）</summary>
+    public int DefaultResolution => conversionSettings.resolution;
+
+    /// <summary>エントリに実際に使う細かさ。未設定なら既定値。</summary>
+    public int ResolutionOf(FireworkEntry entry)
+        => entry != null && entry.resolution > 0 ? entry.resolution : DefaultResolution;
 
     /// <summary>
-    /// 画像花火の細かさを変える。変換済みのエントリはすべて焼き直す。
-    /// 焼き直しはコルーチンなので、呼び出し側で StartCoroutine すること
-    /// （件数が多いと同期処理ではアプリが固まるため。ConvertAllCoroutine と同じ方針）。
+    /// 1件の細かさを変えて、その場で焼き直す。
+    /// 1枚ぶんの変換（最大でも128×128の縮小＋読み出し）なので同期で十分速い。
+    /// 全件の焼き直しと違ってフレームを跨ぐ必要がない。
     /// </summary>
-    public IEnumerator SetImageResolutionCoroutine(int resolution, System.Action<int> onDone)
+    public void SetEntryResolution(FireworkEntry entry, int resolution)
     {
+        if (entry == null) return;
+
         // 極端な値で焼くと粒が1個になったり数万個になったりするので、実用域に丸める
         resolution = Mathf.Clamp(resolution, 8, 128);
+        if (entry.resolution == resolution) return;
 
-        if (resolution == conversionSettings.resolution)
+        entry.resolution = resolution;
+
+        // 未変換のまま細かさだけ変えられた場合は、焼くのは変換時でよい
+        if (entry.localTexture == null)
         {
-            onDone?.Invoke(0);
-            yield break;
+            RaiseEntriesChanged();
+            return;
         }
 
-        conversionSettings.resolution = resolution;
-        SettingsStore.SetInt($"{nameof(FireworkManager)}.imageResolution", resolution);
-        Debug.Log($"[FWManager] 画像花火の細かさを {resolution}x{resolution} に変更");
-
-        yield return ReconvertAllCoroutine(onDone);
-    }
-
-    /// <summary>
-    /// 変換済みのエントリを現在の設定で焼き直す。
-    /// ConvertAllCoroutine が「未変換だけ」を対象にするのに対し、こちらは
-    /// 変換済みも含めて作り直す（設定を変えた後の追従用）。
-    /// </summary>
-    public IEnumerator ReconvertAllCoroutine(System.Action<int> onDone)
-    {
-        var targets = _entries.Where(e => e.localTexture != null).ToList();
-        if (targets.Count == 0)
-        {
-            onDone?.Invoke(0);
-            yield break;
-        }
-
-        int done = 0;
-
-        // 1件ごとに通知すると UI が全行を作り直して O(N²) になるため、
-        // ループ中は抑制して最後に1回だけ通知する（ConvertAll と同じ理由）
-        _suppressEvents = true;
-        try
-        {
-            foreach (var e in targets)
-            {
-                e.particleData = _converter.Convert(e.localTexture);
-                e.isConverted  = true;
-                done++;
-
-                // 数件ごとに1フレーム譲る。全件を1フレームで焼くと
-                // 件数しだいで目に見えて固まる
-                if (done % 4 == 0) yield return null;
-            }
-        }
-        finally
-        {
-            // 途中でコルーチンが止められても抑制フラグを立てっぱなしにしない
-            _suppressEvents = false;
-        }
-
-        Debug.Log($"[FWManager] {done} 件を焼き直しました（{conversionSettings.resolution}x{conversionSettings.resolution}）");
-        RaiseEntriesChanged();
-        onDone?.Invoke(done);
+        ConvertEntry(entry);   // ここで RaiseEntriesChanged される
     }
 
     // ── 変換 ──
@@ -249,9 +206,14 @@ public class FireworkManager : MonoBehaviour
             Debug.LogWarning($"[FWManager] No texture: {entry.displayName}");
             return;
         }
-        entry.particleData = _converter.Convert(entry.localTexture);
+        // 細かさは1件ごと。未設定なら既定値で焼き、実際に使った値を書き戻す
+        // （以後この行は具体値を表示できる＝「既定」という曖昧な状態が残らない）
+        int n = ResolutionOf(entry);
+        entry.resolution = n;
+
+        entry.particleData = _converter.Convert(entry.localTexture, n);
         entry.isConverted  = true;
-        Debug.Log($"[FWManager] Converted {entry.displayName}: {entry.particleData.particles.Length} pts");
+        Debug.Log($"[FWManager] Converted {entry.displayName}: {entry.particleData.particles.Length} pts ({n}x{n})");
         RaiseEntriesChanged();
     }
 

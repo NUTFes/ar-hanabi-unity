@@ -122,11 +122,6 @@ public class AdminUIManager : MonoBehaviour
              "ドーム表示中でもONならボーンは出る（以前はドーム化が強制的にOFFにしていた）")]
     [SerializeField] private Button           skeletonButton;
     [SerializeField] private TextMeshProUGUI  skeletonText;
-    [Tooltip("画像花火を何×何の粒に分解するか。押すたびに 小→中→大 と切り替わる。\n" +
-             "大きいほど絵が細かく出るが粒数が増えて重くなる。\n" +
-             "切り替えると取得済みの花火をすべて焼き直すため、数秒かかることがある")]
-    [SerializeField] private Button           imageResButton;
-    [SerializeField] private TextMeshProUGUI  imageResText;
 
     [Header("検出の調整タブ（スライダー）")]
     [Tooltip("ビルド後にUnity Editorへ触れない前提で、展示中に調整したくなる値を\n" +
@@ -319,7 +314,6 @@ public class AdminUIManager : MonoBehaviour
         imgEnableButton ?.onClick.AddListener(OnImgEnableClicked);
         matteButton     ?.onClick.AddListener(OnMatteClicked);
         skeletonButton  ?.onClick.AddListener(OnSkeletonClicked);
-        imageResButton  ?.onClick.AddListener(OnImageResClicked);
 
         // 人の検出閾値は PoseLandmarkDetector が持つ。GestureDetector と同じく
         // AdminPanel の外にあるのでシーンから自動解決する
@@ -380,9 +374,6 @@ public class AdminUIManager : MonoBehaviour
         // エントリ変更の購読
         _manager.OnEntriesChanged += RefreshList;
 
-        // 画像花火の細かさは FireworkManager が持つので、解決できた後にラベルを合わせる
-        UpdateImageResLabel();
-
         RefreshList();
         SetStatus("[OK] 準備完了（F1キーでこの画面の表示/非表示）");
     }
@@ -422,10 +413,6 @@ public class AdminUIManager : MonoBehaviour
             && (cameraBackground == null || !cameraBackground.IsSwitching))
             cameraIndexButton.interactable = true;
 
-        // 焼き直しコルーチンが死んだ場合も同じ。_reconverting はコールバックでしか
-        // 降りないので、コールバックに到達しないまま死ぬとボタンが固まる
-        if (imageResButton != null && !imageResButton.interactable && !_reconverting)
-            imageResButton.interactable = true;
     }
 
     private void OnDestroy()
@@ -720,6 +707,22 @@ public class AdminUIManager : MonoBehaviour
                 _manager.SetActive(entry, !entry.isActive);
                 // ラベルはOnEntriesChanged → RefreshListで更新される
             });
+
+        // ［細かさ］ボタン。この花火だけの粒の細かさを 小→中→大 で循環させる。
+        // 中（既定値）は白のまま、小/大に振ったときだけ色が付く
+        //（＝色が付いている＝既定から動かしてある、という規則を他のトグルと揃える）
+        int resIndex = NearestImageResIndex(
+            _manager != null ? _manager.ResolutionOf(entry) : ImageResSteps[1]);
+
+        var (resBg, resFg) = resIndex switch
+        {
+            0 => (AdminUiStyle.EnumMixBackground,   AdminUiStyle.EnumMixLabel),    // 小
+            2 => (AdminUiStyle.EnumSpaceBackground, AdminUiStyle.EnumSpaceLabel),  // 大
+            _ => (AdminUiStyle.ButtonBackground,    AdminUiStyle.ButtonLabel),     // 中
+        };
+
+        MakeButton(rowGO.transform, $"細かさ {ImageResLabels[resIndex]}", resBg, resFg,
+            () => OnEntryResolutionClicked(entry));
 
         // ［選択 / 解除］ボタン（プレビューパネルと行ハイライトに反映）。
         // 選択中の行では「解除」になり、押すと選択を外せる
@@ -1030,7 +1033,7 @@ public class AdminUIManager : MonoBehaviour
                 AdminTab.Space => "宇宙モードONで枠・UFO・宇宙花火が有効。個別スイッチはOFF中も保存されます",
                 AdminTab.Tune  => "右へ動かすほど反応しにくくなります（誤発火を減らしたいときは右へ）",
                 _              => "テスト打上=花火を1発試す ／ 丸窓=映像をドーム型に切り抜く表示 ／ " +
-                                  "細かさ=大きいほど絵が細かい（切替時に取得済みの花火を焼き直します）",
+                                  "花火ごとの細かさは下の一覧の［細かさ］から",
             };
         }
     }
@@ -1288,79 +1291,23 @@ public class AdminUIManager : MonoBehaviour
         ApplyToggleVisual(skeletonButton, skeletonText, "ボーン表示",
                           _skeleton != null && _skeleton.ShowSkeleton);
 
-    // ── 画像花火の細かさ（大中小）──
+    // ── 画像花火の細かさ（一覧の行ごと）──
     //
     // 画像を n×n に縮小してから粒にしているので、この n が「細かさ」そのもの。
-    // 中（32）が既定で、シーンに保存されている値もこれ。小さくすると粒が減って軽くなり、
-    // 大きくすると絵が細かく出るぶん粒数が増えて重くなる。
+    // 小さくすると粒が減って軽くなり、大きくすると絵が細かく出るぶん粒数が増える。
     // 24〜48 という幅は ImageToParticles 側のコメントが「花火らしく粗い粒にしたい場合は
     // 24〜48 あたり」と書いている実用域をそのまま3段にしたもの。
     //
-    // ── スライダーではなくボタンにした理由 ──
-    //   切り替えるたびに取得済みの花火を全部焼き直す（数秒かかりうる）ので、
-    //   ドラッグ中に何度も焼き直しが走る連続値とは相性が悪い。
-    //   3段なら「押した回数だけ焼き直す」で済み、現場でも元の段に戻しやすい。
+    // ── 全体で1つ持たず、行ごとにした理由 ──
+    //   絵によって最適な細かさが違う。文字や線画は細かく焼かないと読めないが、
+    //   面で塗った絵は粗いほうがむしろ花火らしい粒に見える。
+    //   全体で1つの値を共有すると、どちらかが必ず妥協になる。
     private static readonly int[]    ImageResSteps  = { 24, 32, 48 };
     private static readonly string[] ImageResLabels = { "小", "中", "大" };
 
-    // 焼き直し中かどうか。多重起動すると同じエントリを二重に焼くので弾く
-    private bool _reconverting;
-
-    private void OnImageResClicked()
-    {
-        if (_manager == null)
-        {
-            SetStatus("[WARN] FireworkManager が見つかりません");
-            return;
-        }
-
-        if (_reconverting)
-        {
-            SetStatus("[WARN] 画像花火を焼き直し中です");
-            return;
-        }
-
-        int next = ImageResSteps[(NearestImageResIndex() + 1) % ImageResSteps.Length];
-
-        _reconverting = true;
-        if (imageResButton != null) imageResButton.interactable = false;
-        SetStatus($"[OK] 画像花火の細かさを{LabelForResolution(next)}に変更中…");
-
-        // コルーチンは FireworkManager 側で回す。
-        // このパネルを閉じても CanvasGroup で隠れるだけなので止まらないが、
-        // 「エントリを持っている側が自分の焼き直しを回す」ほうが所有関係として自然
-        // （更新ボタンの API 取得と同じ作法）
-        _manager.StartCoroutine(_manager.SetImageResolutionCoroutine(next, done =>
-        {
-            _reconverting = false;
-            if (imageResButton != null) imageResButton.interactable = true;
-
-            UpdateImageResLabel();
-            SetStatus(done == 0
-                ? $"[OK] 画像花火の細かさ: {LabelForResolution(_manager.ImageResolution)}"
-                : $"[OK] 画像花火の細かさを{LabelForResolution(_manager.ImageResolution)}にして{done}件を焼き直しました");
-        }));
-    }
-
-    // 現在値に一番近い段を返す。完全一致を求めないのは、Inspector や
-    // PlayerPrefs に段以外の値（例: 40）が入っていても、そこから自然に巡回を
-    // 始められるようにするため
-    private int NearestImageResIndex()
-    {
-        if (_manager == null) return 1;   // 既定の「中」
-
-        int current = _manager.ImageResolution;
-        int nearest = 0;
-        int bestDiff = int.MaxValue;
-        for (int i = 0; i < ImageResSteps.Length; i++)
-        {
-            int diff = Mathf.Abs(ImageResSteps[i] - current);
-            if (diff < bestDiff) { bestDiff = diff; nearest = i; }
-        }
-        return nearest;
-    }
-
-    private string LabelForResolution(int resolution)
+    // 与えられた解像度に一番近い段の番号。完全一致を求めないのは、
+    // Inspector の既定値が段からずれていても（例: 40）そこから自然に巡回できるようにするため
+    private static int NearestImageResIndex(int resolution)
     {
         int nearest = 0;
         int bestDiff = int.MaxValue;
@@ -1369,31 +1316,22 @@ public class AdminUIManager : MonoBehaviour
             int diff = Mathf.Abs(ImageResSteps[i] - resolution);
             if (diff < bestDiff) { bestDiff = diff; nearest = i; }
         }
-        return ImageResLabels[nearest];
+        return nearest;
     }
 
-    // 「中」が既定なので通常ボタンと同じ白のまま。小/大に振ったときだけ色が付く
-    // （＝色が付いている＝既定から動かしてある、という規則を他のトグルと揃える）
-    private void UpdateImageResLabel()
+    // 行の［細かさ］ボタン。押すたびに 小→中→大 を循環し、その1件だけを焼き直す。
+    // 1枚ぶんの変換なので同期で終わる（全件焼き直しと違いフレームを跨がない）
+    private void OnEntryResolutionClicked(FireworkEntry entry)
     {
-        if (_manager == null)
-        {
-            if (imageResText != null) imageResText.text = "画像花火の細かさ  ―";
-            return;
-        }
+        if (_manager == null || entry == null) return;
 
-        int index = NearestImageResIndex();
+        int current = _manager.ResolutionOf(entry);
+        int next    = ImageResSteps[(NearestImageResIndex(current) + 1) % ImageResSteps.Length];
 
-        var (bg, fg) = index switch
-        {
-            0 => (AdminUiStyle.EnumMixBackground,   AdminUiStyle.EnumMixLabel),    // 小
-            2 => (AdminUiStyle.EnumSpaceBackground, AdminUiStyle.EnumSpaceLabel),  // 大
-            _ => (AdminUiStyle.ButtonBackground,    AdminUiStyle.ButtonLabel),     // 中（既定）
-        };
-
-        if (imageResText != null)
-            imageResText.text = $"画像花火の細かさ [{ImageResLabels[index]}]";
-        SetButtonColors(imageResButton, imageResText, bg, fg);
+        // 焼き直すと OnEntriesChanged → RefreshList で行が作り直され、
+        // ラベルは新しい値で組まれる。ここで個別にラベルを触る必要はない
+        _manager.SetEntryResolution(entry, next);
+        SetStatus($"[OK] {entry.displayName} の細かさ: {ImageResLabels[NearestImageResIndex(next)]}");
     }
 
     // Main Camera への自動アタッチは AfterSceneLoad で走るので、AdminUIManager.Start()

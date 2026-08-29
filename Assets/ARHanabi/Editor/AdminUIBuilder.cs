@@ -106,7 +106,6 @@ public static class AdminUIBuilder
         "RefreshButton",
         "CameraIndexButton",
         "ImgEnableButton",
-        "ImageResButton",
         "MatteButton",
         "SkeletonButton",
     };
@@ -184,8 +183,6 @@ public static class AdminUIBuilder
         { "ImgEnableButton",    "画像花火 [ON]" },
         { "MatteButton",        "丸窓モード [OFF]" },
         { "SkeletonButton",     "ボーン表示 [ON]" },
-        // 段は 小(24) / 中(32) / 大(48)。中がシーンに保存されている既定値
-        { "ImageResButton",     "画像花火の細かさ [中]" },
 
         // 宇宙モードタブ
         { "SpaceModeButton",    "宇宙モード [OFF]" },
@@ -220,6 +217,9 @@ public static class AdminUIBuilder
         "HoldButton",
         "ImgChanceButton",
         "PersonConfButton",
+        // 画像花火の細かさは全体で1つ持つのをやめ、一覧の行ごとの設定にした
+        // （絵によって最適な細かさが違うため。AdminUIManager.BuildEntryRow 参照）
+        "ImageResButton",
     };
 
     // 旧構成のセクション。中のボタンは新しいページへ reparent されるので、
@@ -895,7 +895,6 @@ public static class AdminUIBuilder
         AssignButton(so, panel, "ImgEnableButton",   "imgEnableButton",   "imgEnableText",   log);
         AssignButton(so, panel, "MatteButton",       "matteButton",       "matteText",       log);
         AssignButton(so, panel, "SkeletonButton",    "skeletonButton",    "skeletonText",    log);
-        AssignButton(so, panel, "ImageResButton",    "imageResButton",    "imageResText",    log);
 
         // ── 宇宙モードタブ ──
         AssignButton(so, panel, "SpaceModeButton",   "spaceModeButton",   "spaceModeText",   log);
