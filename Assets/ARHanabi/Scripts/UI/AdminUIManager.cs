@@ -79,7 +79,7 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private TextMeshProUGUI statusText;
 
     [Header("タブ")]
-    [Tooltip("3枚のタブ。同時に開くのは1枚だけ。\n" +
+    [Tooltip("4枚のタブ。同時に開くのは1枚だけ。\n" +
              "選択中は濃紺背景＋白文字、非選択は白背景＋濃紺文字（AdminUiStyle）")]
     [SerializeField] private Button           tabBasicButton;
     [SerializeField] private TextMeshProUGUI  tabBasicText;
@@ -87,10 +87,13 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private TextMeshProUGUI  tabSpaceText;
     [SerializeField] private Button           tabTuneButton;
     [SerializeField] private TextMeshProUGUI  tabTuneText;
+    [SerializeField] private Button           tabShellButton;
+    [SerializeField] private TextMeshProUGUI  tabShellText;
     [Tooltip("各タブの中身。SetActive で1枚だけ表示する")]
     [SerializeField] private Transform        tabBasicPage;
     [SerializeField] private Transform        tabSpacePage;
     [SerializeField] private Transform        tabTunePage;
+    [SerializeField] private Transform        tabShellPage;
     [Tooltip("選択中のタブに応じて切り替わる1行の説明文")]
     [SerializeField] private TextMeshProUGUI  tabHelpText;
     [Tooltip("タブ行の右端に常設する件数表示。\n" +
@@ -203,7 +206,7 @@ public class AdminUIManager : MonoBehaviour
     // ── タブ ──
     // 宇宙モードのマスターと違い、この値自体は「効き目」を持たない純粋なUI表示切替なので
     // 永続化しない（次回起動時は「基本」から始まってよい）
-    private enum AdminTab { Basic, Space, Tune }
+    private enum AdminTab { Basic, Space, Tune, Shell }
     private AdminTab _activeTab = AdminTab.Basic;
 
     // 終了ボタンの2段階確認。行ごとの確認待ちを持つ削除ボタンと違い
@@ -346,6 +349,12 @@ public class AdminUIManager : MonoBehaviour
         tabBasicButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Basic));
         tabSpaceButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Space));
         tabTuneButton  ?.onClick.AddListener(() => SwitchTab(AdminTab.Tune));
+        tabShellButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Shell));
+
+        // 「花火の型」タブの中身。並ぶボタンは型そのものなので、
+        // 一覧が実行時にしか分からない（Asset を差し替えれば変わる）。
+        // Builder は器だけ作り、中身はここで組む
+        BuildShellButtons();
 
         // 閉じる/開くも FireworkManager に依存しない、パネル自身の表示制御なので
         // 同じ理由で早期 return より先に配線する
@@ -1021,10 +1030,12 @@ public class AdminUIManager : MonoBehaviour
         if (tabBasicPage != null) tabBasicPage.gameObject.SetActive(tab == AdminTab.Basic);
         if (tabSpacePage != null) tabSpacePage.gameObject.SetActive(tab == AdminTab.Space);
         if (tabTunePage  != null) tabTunePage .gameObject.SetActive(tab == AdminTab.Tune);
+        if (tabShellPage != null) tabShellPage.gameObject.SetActive(tab == AdminTab.Shell);
 
         ApplyTabVisual(tabBasicButton, tabBasicText, tab == AdminTab.Basic);
         ApplyTabVisual(tabSpaceButton, tabSpaceText, tab == AdminTab.Space);
         ApplyTabVisual(tabTuneButton,  tabTuneText,  tab == AdminTab.Tune);
+        ApplyTabVisual(tabShellButton, tabShellText, tab == AdminTab.Shell);
 
         if (tabHelpText != null)
         {
@@ -1032,10 +1043,89 @@ public class AdminUIManager : MonoBehaviour
             {
                 AdminTab.Space => "宇宙モードONで枠・UFO・宇宙花火が有効。個別スイッチはOFF中も保存されます",
                 AdminTab.Tune  => "右へ動かすほど反応しにくくなります（誤発火を減らしたいときは右へ）",
+                AdminTab.Shell => "型を押すとその花火だけを1発打ちます（開き方・落ち方の確認用）",
                 _              => "テスト打上=花火を1発試す ／ 丸窓=映像をドーム型に切り抜く表示 ／ " +
                                   "花火ごとの細かさは下の一覧の［細かさ］から",
             };
         }
+    }
+
+    // ── 「花火の型」タブ（型を指名してテスト打上）──
+    //
+    // ── なぜこのタブが要るか ──
+    //   型の選出（FireworkLauncher.PickPreset）はランダムなので、
+    //   「柳の落ち方だけを見たい」ということができなかった。
+    //   開き方・落ち方は型ごとの設定なのに、狙った型を出せないと
+    //   値を1つ変えて確認するのに何度もジェスチャーして待つことになる。
+    //   ここから1クリックで指名して打てるようにして、
+    //   「打つ→Inspectorで直す→もう一度打つ」を短く回せるようにする。
+    //
+    // ── Builder ではなくここで組む理由 ──
+    //   並べるボタンは型そのもので、一覧は FireworkLauncher が
+    //   Asset → Inspector配列 → 既定 の順で実行時に解決する。
+    //   Editor でシーンを組む時点では確定しないので、
+    //   花火の一覧（BuildEntryRow）と同じく実行時生成にしてある。
+    private void BuildShellButtons()
+    {
+        if (tabShellPage == null) return;
+
+        for (int i = tabShellPage.childCount - 1; i >= 0; i--)
+            Destroy(tabShellPage.GetChild(i).gameObject);
+
+        if (_launcher == null)
+        {
+            Debug.LogWarning("[AdminUI] FireworkLauncher が見つかりません。花火の型タブは空になります");
+            return;
+        }
+
+        var presets = _launcher.GetShellPresets();
+        if (presets == null || presets.Count == 0) return;
+
+        for (int i = 0; i < presets.Count; i++)
+        {
+            var preset = presets[i];   // クロージャに包むのでループ変数を必ず退避する
+            if (preset == null) continue;
+
+            // 宇宙の型だけ色を変える。宇宙モードの「花火の種類」ボタンと
+            // 同じ配色にして、どれが宇宙側かを一目で分かるようにする
+            bool isSpace = preset.category == "宇宙";
+            var (bg, fg) = isSpace
+                           ? (AdminUiStyle.EnumSpaceBackground, AdminUiStyle.EnumSpaceLabel)
+                           : (AdminUiStyle.ButtonBackground,    AdminUiStyle.ButtonLabel);
+
+            MakeButton(tabShellPage, preset.name, bg, fg, () => OnShellTestClicked(preset));
+        }
+
+        // 高さを件数から出す。Builder 側は3行ぶんを仮置きしているだけなので、
+        // 型を増やしたときに最終行がページの外へはみ出さないようここで直す
+        //（検出の調整タブで一度やらかしている壊れ方なので、同じ轍を踏まない）
+        var grid = tabShellPage.GetComponent<GridLayoutGroup>();
+        if (grid != null)
+        {
+            int cols = Mathf.Max(1, grid.constraintCount);
+            int rows = Mathf.CeilToInt(presets.Count / (float)cols);
+            float h  = grid.cellSize.y * rows + grid.spacing.y * (rows - 1);
+
+            var rect = tabShellPage as RectTransform;
+            if (rect != null) rect.sizeDelta = new Vector2(rect.sizeDelta.x, h);
+
+            var le = tabShellPage.GetComponent<LayoutElement>();
+            if (le == null) le = tabShellPage.gameObject.AddComponent<LayoutElement>();
+            le.preferredHeight = h;
+            le.minHeight       = h;
+        }
+    }
+
+    private void OnShellTestClicked(ShellPreset preset)
+    {
+        if (_launcher == null || preset == null) return;
+
+        // 大玉で打つ。小玉倍率（smallShellScale 0.62）が掛かると細部が見えにくく、
+        // 開き方・落ち方の確認には向かないため
+        if (_launcher.LaunchTestShell(preset, isLarge: true))
+            SetStatus($"[打上] {preset.name}（{preset.category}）");
+        else
+            SetStatus($"[NG] {preset.name} を打ち上げられませんでした");
     }
 
     // 選択中は濃紺＋白文字、非選択は白＋濃紺文字。

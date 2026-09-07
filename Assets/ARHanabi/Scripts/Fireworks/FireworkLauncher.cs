@@ -49,8 +49,18 @@ public class FireworkLauncher : MonoBehaviour
              "「菊」「冠」「千輪」といった型を表現できなかった")]
     [SerializeField] private bool useShellPresets = true;
 
-    [Tooltip("打ち上げる型の一覧。1発ごとにランダムに選ばれる。\n" +
-             "空なら ShellPreset.DefaultLibrary() の既定11種を使う")]
+    [Tooltip("打ち上げる型をまとめた Asset（ARHanabi/花火プリセット集）。\n" +
+             "これが割り当てられていて中身があれば、これを使う。\n" +
+             "\n" +
+             "型ごとの開き方・落ち方を詰めるときは、この Asset を再生中に編集する。\n" +
+             "シーン上のコンポーネントの値は Play を抜けると巻き戻るが、\n" +
+             "Asset の値は残るので「打つ→直す→打つ」を再コンパイル無しで回せる。\n" +
+             "メニュー ARHanabi/花火プリセットの Asset を生成 で作れる")]
+    [SerializeField] private ShellPresetLibrary presetLibrary;
+
+    [Tooltip("打ち上げる型の一覧（旧来のInspector配列）。1発ごとにランダムに選ばれる。\n" +
+             "presetLibrary が空のときだけ使う。どちらも空なら\n" +
+             "ShellPreset.DefaultLibrary() の既定16種を使う")]
     [SerializeField] private ShellPreset[] shellPresets;
 
     [Tooltip("大玉（両手上げ）に使う型を名前で絞る。空なら全種から選ぶ。\n" +
@@ -227,7 +237,8 @@ public class FireworkLauncher : MonoBehaviour
     private System.Collections.IEnumerator LaunchSequence(
         Vector2 normalizedPos, float xOffsetViewport,
         bool isLarge, float startDelay, float volumeScale,
-        bool forceImage = false, bool forceDecided = false)
+        bool forceImage = false, bool forceDecided = false,
+        ShellPreset forcedPreset = null)
     {
         if (startDelay > 0f) yield return new WaitForSeconds(startDelay);
 
@@ -241,14 +252,19 @@ public class FireworkLauncher : MonoBehaviour
         // 打てるエントリが0件なら最初から型花火にする（以前は打ってから
         // フォールバックしていたが、それだと開く高さを先に決められない）。
         // forceDecided が true のときは呼び出し側が既に抽選している
-        bool useImage = forceDecided
-                        ? forceImage
-                        : enableImageFirework
-                          && ActiveImageCount > 0
-                          && Random.value < imageFireworkChance;
+        // forcedPreset は Admin画面の「花火」タブから型を指名して打つときに渡る。
+        // その場合は画像花火の抽選そのものを飛ばす（指名した型を必ず打つのが目的なので、
+        // 確率で画像花火に化けてしまうとテストにならない）
+        bool useImage = forcedPreset != null
+                        ? false
+                        : forceDecided
+                          ? forceImage
+                          : enableImageFirework
+                            && ActiveImageCount > 0
+                            && Random.value < imageFireworkChance;
 
-        ShellPreset preset = null;
-        if (!useImage && useShellPresets)
+        ShellPreset preset = forcedPreset;
+        if (preset == null && !useImage && useShellPresets)
         {
             preset = PickPreset(isLarge);
             if (preset == null)
@@ -259,7 +275,12 @@ public class FireworkLauncher : MonoBehaviour
         }
 
         float viewportY = preset != null ? preset.launchViewportY : 0.5f;
-        var   burstPos  = ResolveLaunchPosition(normalizedPos, xOffsetViewport, viewportY);
+
+        // finalSpreadX を持つ型は「最終位置を先に決めて出現位置を逆算する」経路を通る。
+        // drift で大きく移動する型は、出現位置を散らすと着地点が画面外へ出てしまうため
+        var burstPos = preset != null && preset.finalSpreadX > 0f
+                       ? ResolveDriftingLaunchPosition(preset, normalizedPos, xOffsetViewport, isLarge)
+                       : ResolveLaunchPosition(normalizedPos, xOffsetViewport, viewportY);
 
         // 宇宙モードの音ON/OFFをここで確認して反映する。
         // このクラスは SpaceModeController の状態をイベントで購読し続けているわけではなく、
@@ -273,15 +294,25 @@ public class FireworkLauncher : MonoBehaviour
         }
 
         // ── 1. 打ち上げ ──
-        if (enableLaunchPhase && launchToBurstDelay > 0f)
+        // skipRisePhase の型（打ち下ろし＝上から降ってくる型）はここを丸ごと飛ばす。
+        // 下からロケットが上がってから玉が降りてくると動きが往復して見えるため。
+        // 打ち上げ音も一緒に省く（降ってくる玉に下からの笛は合わない）
+        bool useRise = enableLaunchPhase
+                       && launchToBurstDelay > 0f
+                       && !(preset != null && preset.skipRisePhase);
+
+        if (useRise)
         {
             var fromPos = ResolveLaunchPosition(normalizedPos, xOffsetViewport,
                                                 launchFromViewportY);
 
-            FireworkAudioPlayer.Instance?.PlayLaunch(fromPos);
-            SpawnLaunchTrail(fromPos, burstPos, launchToBurstDelay, isLarge);
+            float rise = ResolveRiseSeconds(preset, viewportY);
 
-            yield return new WaitForSeconds(launchToBurstDelay);
+            FireworkAudioPlayer.Instance?.PlayLaunch(fromPos);
+            SpawnLaunchTrail(fromPos, burstPos, rise, isLarge,
+                             preset != null ? preset.riseTrailScale : 1f);
+
+            yield return new WaitForSeconds(rise);
         }
 
         // ── 2. 開花 ──
@@ -306,9 +337,13 @@ public class FireworkLauncher : MonoBehaviour
         //（Sfx/Burst/<soundKey>/・Sfx/Crackle/<soundKey>/）が優先的に鳴る。
         // preset が null（画像花火 or useShellPresets OFF）なら null を渡し、
         // FireworkAudioPlayer 側で共通プールにフォールバックさせる
+        // burstSoundDelay は「見せ場が生成の瞬間ではない型」のためのずらし。
+        // 降ってきて最下点で開く型は、玉が現れた時点で鳴らすと
+        // 実際の爆発と1秒以上ずれるので、開くタイミングまで遅らせる
         FireworkAudioPlayer.Instance?.PlayBurst(burstPos, kind, isLarge,
                                                 soundKey: preset?.soundKey,
-                                                delay: 0f, volumeScale: volumeScale,
+                                                delay: Mathf.Max(0f, preset?.burstSoundDelay ?? 0f),
+                                                volumeScale: volumeScale,
                                                 crackleDelayOverride: preset?.crackleDelayOverride ?? -1f);
 
         // 宇宙モードの UFO 演出（が有効なとき）へ開花位置を知らせる。
@@ -317,14 +352,41 @@ public class FireworkLauncher : MonoBehaviour
         SpaceModeController.NotifyBurst(burstPos);
     }
 
+    // ── 昇り時間を型ごとに決める ──
+    //
+    // 従来は全ての型が launchToBurstDelay の一定時間で昇っていた。
+    // ところが開く高さ（launchViewportY）は型ごとに違うので、高く開く
+    // 柳（0.72）や冠（0.66）は同じ時間でより長い距離を飛ぶ、つまり
+    // 「速く昇った」ように見えていた。上がるほど遅くなるのが実物なので逆。
+    //
+    // そこでまず飛距離で正規化して見かけの昇り速度を揃え、そのうえで
+    // 型ごとの riseTimeScale を掛ける。中央（viewportY 0.5）で開く型が
+    // ちょうど launchToBurstDelay になるので、既存の値の意味は変わらない。
+    //
+    // 最後に音の制約で丸める。打ち上げ笛は約0.75秒なので、これを超えると
+    // 笛が鳴り終わってから破裂するまでに無音の隙間ができてしまう。
+    private float ResolveRiseSeconds(ShellPreset preset, float viewportY)
+    {
+        if (preset == null) return launchToBurstDelay;
+
+        // 中央開花を 1.0 とする飛距離の比。分母が 0 になり得るので保険を掛ける
+        float reference = Mathf.Max(0.05f, 0.5f - launchFromViewportY);
+        float span      = Mathf.Max(0.05f, viewportY - launchFromViewportY) / reference;
+
+        return Mathf.Clamp(launchToBurstDelay * span * preset.riseTimeScale,
+                           RiseSecondsMin, RiseSecondsMax);
+    }
+
     // 上昇の光跡を出す
-    private void SpawnLaunchTrail(Vector3 from, Vector3 to, float seconds, bool isLarge)
+    private void SpawnLaunchTrail(Vector3 from, Vector3 to, float seconds, bool isLarge,
+                                  float trailScale = 1f)
     {
         var go = new GameObject("LaunchTrail");
         go.transform.position = from;
 
         var fx = go.AddComponent<LaunchTrailEffect>();
         fx.SetShader(particleColorShader);
+        fx.sparkCount = Mathf.Max(0, Mathf.RoundToInt(fx.sparkCount * trailScale));
         fx.Launch(from, to, seconds, isLarge ? 1f : 0.75f);
     }
 
@@ -381,6 +443,38 @@ public class FireworkLauncher : MonoBehaviour
         return true;
     }
 
+    /// <summary>
+    /// 型を指名して打ち上げる（Admin画面の「花火」タブから使う）。
+    ///
+    /// ── なぜ必要か ──
+    ///   PickPreset はランダムなので、従来は「柳だけを見たい」ができなかった。
+    ///   型ごとに開き方・落ち方を詰めるには、狙った型を何度も打ち直せることが必須。
+    ///   ジェスチャーも要らないので、Inspector で値を触ったらすぐ打てる。
+    ///
+    ///   打ち上げの経路自体は通常と同じ LaunchSequence を通す。
+    ///   テストと本番で絵や音が違うとテストの意味が薄くなるため
+    ///   （LaunchTest のコメントに書かれている、この方針をそのまま踏襲している）。
+    /// </summary>
+    public bool LaunchTestShell(ShellPreset preset, bool isLarge = true)
+    {
+        if (mainCamera == null)
+        {
+            Debug.LogError("[Launcher] mainCamera が設定されていません");
+            return false;
+        }
+
+        if (preset == null)
+        {
+            Debug.LogWarning("[Launcher] 指名された型が null です");
+            return false;
+        }
+
+        StartCoroutine(LaunchSequence(new Vector2(0.5f, 0.5f), 0f,
+                                      isLarge, startDelay: 0f, volumeScale: 1f,
+                                      forcedPreset: preset));
+        return true;
+    }
+
     /// <summary>打てる画像花火（isActive かつ変換済み）の件数</summary>
     public int ActiveImageCount =>
         FireworkManager.Instance != null
@@ -398,21 +492,34 @@ public class FireworkLauncher : MonoBehaviour
         var fx = go.AddComponent<ShellFireworkEffect>();
         fx.SetShader(particleColorShader);
 
-        // 画面に収まる倍率を求める。
-        // 星が到達する半径は burstSpeed × dragTau で決まる（v0·τ·(1-e^-∞) = v0·τ）ので、
-        // それが画面の半分に収まるよう正規化する。こうすると型ごとに
-        // burstSpeed や dragTau が違っても画面上の大きさが揃う。
+        // ── 位置用と描画サイズ用で倍率を分ける ──
+        //
+        // 画面に収まる倍率を求める。星が到達する半径は burstSpeed × dragTau で決まる
+        //（v0·τ·(1-e^-∞) = v0·τ）ので、それが画面の半分に収まるよう正規化する。
+        // こうすると型ごとに burstSpeed や dragTau が違っても画面上の大きさが揃う。
+        //
+        // ところがこの倍率をそのまま星の描画サイズにも掛けると、倍率が dragTau に
+        // 反比例するため「開く速さを変えただけで粒の大きさが変わる」という罠になっていた。
+        // 型ごとに開き方を詰めるたびに starSize を同倍率で手直しする必要があり、
+        // 調整が常に2値同時修正になっていた。
+        //
+        // そこで描画サイズ側は固定の基準半径（菊の burstSpeed 9 × dragTau 0.46）で
+        // 正規化する。dragTau に依存しなくなるので、dragTau は「開く速さ」だけの
+        // つまみになり、starSize は「菊を基準にした粒の大きさ」という一定の意味を持つ。
         float radius   = preset.burstSpeed * Mathf.Max(0.01f, preset.dragTau);
         float halfView = FrustumHeightAt(launchDistance) * 0.5f * shellScreenFillRatio;
-        float scale    = radius > 0.001f ? halfView / radius : 1f;
 
-        scale *= preset.sizeMultiplier;
-        if (!isLarge) scale *= smallShellScale;
+        // 型ごと／大玉小玉の倍率は位置にもサイズにも等しく効かせる
+        // （小玉は広がりも粒も小さくなってほしい）
+        float common = preset.sizeMultiplier * (isLarge ? 1f : smallShellScale);
 
-        fx.Launch(preset, scale);
+        float posScale  = (radius > 0.001f ? halfView / radius : 1f) * common;
+        float sizeScale = halfView / ShellSizeReferenceRadius        * common;
+
+        fx.Launch(preset, posScale, sizeScale);
 
         Debug.Log($"[Launcher] 型花火 {preset.name}（{preset.category}）: {worldPos} " +
-                  $"scale={scale:F2}");
+                  $"pos={posScale:F2} size={sizeScale:F2}");
     }
 
     // 大玉／小玉ごとに型を選ぶ。名前で絞り込んでいなければ全種から選ぶ。
@@ -430,11 +537,8 @@ public class FireworkLauncher : MonoBehaviour
     // 全種から選ぶ（無音の空振りを作らない、既存の方針をそのまま踏襲）
     private ShellPreset PickPreset(bool isLarge)
     {
-        var library = (shellPresets != null && shellPresets.Length > 0)
-                      ? shellPresets
-                      : _defaultLibrary ??= ShellPreset.DefaultLibrary().ToArray();
-
-        if (library.Length == 0) return null;
+        var library = ResolveLibrary();
+        if (library.Count == 0) return null;
 
         var nameFilter = isLarge ? largeShellNames : smallShellNames;
         var mode = SpaceModeController.Instance?.FireworkMode
@@ -444,10 +548,10 @@ public class FireworkLauncher : MonoBehaviour
         bool hasCategoryFilter = mode != SpaceModeController.SpaceFireworkMode.Mix;
 
         if (!hasNameFilter && !hasCategoryFilter)
-            return library[Random.Range(0, library.Length)];
+            return library[Random.Range(0, library.Count)];
 
         _pickBuffer.Clear();
-        for (int i = 0; i < library.Length; i++)
+        for (int i = 0; i < library.Count; i++)
         {
             var candidate = library[i];
             if (candidate == null) continue;
@@ -474,15 +578,128 @@ public class FireworkLauncher : MonoBehaviour
             _pickBuffer.Add(candidate);
         }
 
-        if (_pickBuffer.Count == 0) return library[Random.Range(0, library.Length)];
+        if (_pickBuffer.Count == 0) return library[Random.Range(0, library.Count)];
         return _pickBuffer[Random.Range(0, _pickBuffer.Count)];
     }
+
+    // 星の描画サイズを正規化するときの基準半径。
+    // 菊（burstSpeed 9 × dragTau 0.46）の到達半径そのもの。
+    // 「菊を基準にした粒の大きさ」という starSize の意味を固定するための定数なので、
+    // ここを動かすと全16種の見かけの粒サイズが一斉に変わる。触らないこと。
+    private const float ShellSizeReferenceRadius = 4.14f;
+
+    // 昇り時間の上下限[秒]。
+    // 上限は打ち上げ笛（Sfx/Launch/Common/launch_whistle_firefly_01.wav、約0.75秒）の制約。
+    // これを超えると笛が鳴り終わってから破裂するまでに無音の隙間ができ、
+    // 「1発なのに音が2つに分かれている」ように聞こえる（このファイルの
+    // launchToBurstDelay のコメント参照）。下限は光跡が読めなくなる境界。
+    private const float RiseSecondsMin = 0.45f;
+    private const float RiseSecondsMax = 0.72f;
+
+    // ── 型の一覧をどこから取るか ──
+    //   presetLibrary（Asset）→ shellPresets[]（旧来のInspector配列）→ DefaultLibrary()
+    // Asset は「あれば使う」上書きに過ぎず、未設定でも誤って消されても
+    // コード側の既定16種で必ず花火が出るようにしてある。
+    //
+    // 結果をキャッシュしないのは、調整中は再生したまま Asset を編集する前提で、
+    // キャッシュすると編集が次の発射に反映されなくなるため。
+    // 戻り値を IReadOnlyList にしてあるので、Asset の List をコピーせずそのまま返せる
+    //（毎発射でのアロケーションを避ける）。
+    private System.Collections.Generic.IReadOnlyList<ShellPreset> ResolveLibrary()
+    {
+        if (presetLibrary != null && presetLibrary.HasAny)
+            return presetLibrary.presets;
+
+        if (shellPresets != null && shellPresets.Length > 0)
+            return shellPresets;
+
+        return _defaultLibrary ??= ShellPreset.DefaultLibrary().ToArray();
+    }
+
+    /// <summary>Admin画面が型の一覧を出すために使う（読み取り専用の用途）</summary>
+    public System.Collections.Generic.IReadOnlyList<ShellPreset> GetShellPresets() => ResolveLibrary();
 
     // 既定ライブラリは初回に1回だけ組み立てて使い回す
     private ShellPreset[] _defaultLibrary;
 
     // 名前で絞り込むときの一時リスト（毎回確保しない）
     private readonly System.Collections.Generic.List<ShellPreset> _pickBuffer = new();
+
+    // ── 移動する型の打ち上げ座標 ──
+    //
+    // drift で大きく移動する型（打ち下ろしの彗星など）は、出現位置を散らすと
+    // 移動したあとの着地点が画面外へ出てしまう。
+    // そこで順序を逆にして、
+    //   1. 見せ場である「最終位置」を正規分布で決める（中央がいちばん出やすい）
+    //   2. そこから移動量を引いて出現位置を逆算する
+    // とすれば、着地点は必ず画面に収まる。
+    // 出現位置が画面外になることはあるが、「画面外から入ってくる」動きになるだけ。
+    private Vector3 ResolveDriftingLaunchPosition(ShellPreset preset, Vector2 normalizedPos,
+                                                  float xOffsetViewport, bool isLarge)
+    {
+        var travel = DriftTravelViewport(preset, isLarge);
+
+        // ── 最終位置（横）──
+        // ±2σ で打ち切る。正規分布をそのまま使うと稀に大きく外れ、
+        // クランプで画面端に張り付く発射が混ざるため
+        float center = launchAtScreenCenter ? 0.5f : Mathf.Clamp01(normalizedPos.x);
+        float spread = Mathf.Clamp(SampleStandardNormal(), -2f, 2f) * preset.finalSpreadX;
+        float uFinal = center + spread + xOffsetViewport;
+
+        // ── 出現位置は最終位置から逆算 ──
+        float uStart = uFinal - travel.x;
+        float vStart = preset.launchViewportY
+                     + Random.Range(-launchViewportJitter.y, launchViewportJitter.y);
+
+        // 画面外から入ってくるのは許すが、極端に遠くからは出さない
+        //（遠すぎると、見えないところで尾を引いている時間が長くなる）
+        uStart = Mathf.Clamp(uStart, -0.25f, 1.25f);
+        vStart = Mathf.Clamp(vStart, -0.25f, 1.25f);
+
+        return mainCamera.ViewportToWorldPoint(new Vector3(uStart, vStart, launchDistance));
+    }
+
+    /// <summary>
+    /// この型が寿命いっぱいで移動する量（ビューポート比）。
+    ///
+    /// drift も重力も「広がり半径に対する比」で持っているので、
+    /// posScale を掛けた時点でどちらも halfView 単位の移動量になる
+    ///   drift の移動 = driftDirection · driftRatio · halfView · common
+    ///   重力の落下   = sagRatio · halfView · common
+    /// あとは視錐台の縦横で割ってビューポート比に直すだけ。
+    ///
+    /// 縦と横で割る値が違うことに注意。画面は横に長い（16:9 なら約1.78倍）ので、
+    /// ワールド座標で同じだけ動いても画面上の横移動は縮んで見える。
+    /// </summary>
+    private Vector2 DriftTravelViewport(ShellPreset preset, bool isLarge)
+    {
+        float halfView = FrustumHeightAt(launchDistance) * 0.5f * shellScreenFillRatio;
+        float common   = preset.sizeMultiplier * (isLarge ? 1f : smallShellScale);
+
+        var dir = preset.driftDirection.sqrMagnitude > 1e-6f
+                  ? preset.driftDirection.normalized
+                  : Vector3.zero;
+
+        Vector3 world = dir * (preset.driftRatio * halfView * common)
+                      + Vector3.down * (preset.sagRatio * halfView * common);
+
+        float frustumHeight = FrustumHeightAt(launchDistance);
+        float frustumWidth  = frustumHeight * mainCamera.aspect;
+
+        return new Vector2(world.x / frustumWidth, world.y / frustumHeight);
+    }
+
+    // 標準正規分布の乱数（Box-Muller法）。
+    // UnityEngine.Random は一様分布しか持たないので自前で作る。
+    // 一様分布だと端も中央も同じ確率で出るが、
+    // 「中央がいちばん出やすく、外れるほど稀」にしたいのでこちらを使う。
+    private static float SampleStandardNormal()
+    {
+        // Log(0) が -∞ になるので (0,1] に寄せる
+        float u1 = 1f - Random.value;
+        float u2 = Random.value;
+        return Mathf.Sqrt(-2f * Mathf.Log(u1)) * Mathf.Cos(2f * Mathf.PI * u2);
+    }
 
     // ── 打ち上げ座標の決定 ──
     // viewportY で高さを指定する。0.5 が画面のど真ん中。
