@@ -89,11 +89,14 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private TextMeshProUGUI  tabTuneText;
     [SerializeField] private Button           tabShellButton;
     [SerializeField] private TextMeshProUGUI  tabShellText;
+    [SerializeField] private Button           tabExperienceButton;
+    [SerializeField] private TextMeshProUGUI  tabExperienceText;
     [Tooltip("各タブの中身。SetActive で1枚だけ表示する")]
     [SerializeField] private Transform        tabBasicPage;
     [SerializeField] private Transform        tabSpacePage;
     [SerializeField] private Transform        tabTunePage;
     [SerializeField] private Transform        tabShellPage;
+    [SerializeField] private Transform        tabExperiencePage;
     [Tooltip("選択中のタブに応じて切り替わる1行の説明文")]
     [SerializeField] private TextMeshProUGUI  tabHelpText;
     [Tooltip("タブ行の右端に常設する件数表示。\n" +
@@ -113,6 +116,20 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private Button           sfxToggleButton;
     [SerializeField] private TextMeshProUGUI  sfxToggleText;
 
+    [Header("体験")]
+    [Tooltip("体験演出（コンボ・アンサンブル）のマスターON/OFF。OFF中はジェスチャーからの花火は\n" +
+             "FireworkLauncher の従来経路（宇宙モード同様、種類を問わず毎回同じ反応）で打つ")]
+    [SerializeField] private Button           expMasterButton;
+    [SerializeField] private TextMeshProUGUI  expMasterText;
+    [SerializeField] private Button           comboButton;
+    [SerializeField] private TextMeshProUGUI  comboText;
+    [SerializeField] private Button           comboNumberButton;
+    [SerializeField] private TextMeshProUGUI  comboNumberText;
+    [SerializeField] private Button           comboTrailButton;
+    [SerializeField] private TextMeshProUGUI  comboTrailText;
+    [SerializeField] private Button           ensembleButton;
+    [SerializeField] private TextMeshProUGUI  ensembleText;
+
     [Header("基本タブのトグル")]
     [SerializeField] private Button           imgEnableButton;
     [SerializeField] private TextMeshProUGUI  imgEnableText;
@@ -125,6 +142,10 @@ public class AdminUIManager : MonoBehaviour
              "ドーム表示中でもONならボーンは出る（以前はドーム化が強制的にOFFにしていた）")]
     [SerializeField] private Button           skeletonButton;
     [SerializeField] private TextMeshProUGUI  skeletonText;
+    [Tooltip("ON: 花火をその人の位置から打つ（FireworkLauncher.LaunchAtScreenCenter を OFF にする）。\n" +
+             "OFF: 常に画面中央から打つ（従来の挙動）")]
+    [SerializeField] private Button           personPosButton;
+    [SerializeField] private TextMeshProUGUI  personPosText;
 
     [Header("検出の調整タブ（スライダー）")]
     [Tooltip("ビルド後にUnity Editorへ触れない前提で、展示中に調整したくなる値を\n" +
@@ -195,6 +216,7 @@ public class AdminUIManager : MonoBehaviour
     private FireworkManager     _manager;
     private FireworkLauncher    _launcher;
     private SpaceModeController _spaceMode;
+    private ExperienceDirector  _experience;
     private GestureDetector     _gesture;
     private CameraCircleMatte   _matte;
     private PoseLandmarkDetector _poseDetector;
@@ -206,7 +228,7 @@ public class AdminUIManager : MonoBehaviour
     // ── タブ ──
     // 宇宙モードのマスターと違い、この値自体は「効き目」を持たない純粋なUI表示切替なので
     // 永続化しない（次回起動時は「基本」から始まってよい）
-    private enum AdminTab { Basic, Space, Tune, Shell }
+    private enum AdminTab { Basic, Space, Tune, Shell, Experience }
     private AdminTab _activeTab = AdminTab.Basic;
 
     // 終了ボタンの2段階確認。行ごとの確認待ちを持つ削除ボタンと違い
@@ -306,6 +328,20 @@ public class AdminUIManager : MonoBehaviour
         UpdateHanabiModeLabel();
         UpdateSfxToggleLabel();
 
+        // 体験演出（コンボ・アンサンブル）も宇宙モードと同じく FireworkManager に依存しないので、
+        // 早期 return より先に配線する。GetOrCreate() はシーンに無ければ自分で生成して返す
+        _experience = ExperienceDirector.GetOrCreate();
+        expMasterButton   ?.onClick.AddListener(OnExpMasterClicked);
+        comboButton       ?.onClick.AddListener(OnComboClicked);
+        comboNumberButton ?.onClick.AddListener(OnComboNumberClicked);
+        comboTrailButton  ?.onClick.AddListener(OnComboTrailClicked);
+        ensembleButton    ?.onClick.AddListener(OnEnsembleClicked);
+        UpdateExpMasterLabel();
+        UpdateComboLabel();
+        UpdateComboNumberLabel();
+        UpdateComboTrailLabel();
+        UpdateEnsembleLabel();
+
         // 設定パネル（ジェスチャー感度・花火の出し方）も FireworkManager に依存しないので、
         // 同じ理由で早期 return より先に配線する。
         // GestureDetector はシーンに1つある前提で自動解決する（AdminPanel の外にあるため
@@ -317,6 +353,7 @@ public class AdminUIManager : MonoBehaviour
         imgEnableButton ?.onClick.AddListener(OnImgEnableClicked);
         matteButton     ?.onClick.AddListener(OnMatteClicked);
         skeletonButton  ?.onClick.AddListener(OnSkeletonClicked);
+        personPosButton ?.onClick.AddListener(OnPersonPosClicked);
 
         // 人の検出閾値は PoseLandmarkDetector が持つ。GestureDetector と同じく
         // AdminPanel の外にあるのでシーンから自動解決する
@@ -335,6 +372,7 @@ public class AdminUIManager : MonoBehaviour
         UpdateImgEnableLabel();
         UpdateMatteLabel();
         UpdateSkeletonLabel();
+        UpdatePersonPosLabel();
 
         // タブは「基本」から始める。ページの SetActive とタブの色をここで揃える
         SwitchTab(AdminTab.Basic);
@@ -346,10 +384,11 @@ public class AdminUIManager : MonoBehaviour
 
         // タブは FireworkManager にも他のどのコンポーネントにも依存しない純粋なUI操作なので、
         // 早期 return より先に配線する（エラー状態でも画面を見て回れるようにするため）
-        tabBasicButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Basic));
-        tabSpaceButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Space));
-        tabTuneButton  ?.onClick.AddListener(() => SwitchTab(AdminTab.Tune));
-        tabShellButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Shell));
+        tabBasicButton      ?.onClick.AddListener(() => SwitchTab(AdminTab.Basic));
+        tabSpaceButton      ?.onClick.AddListener(() => SwitchTab(AdminTab.Space));
+        tabTuneButton       ?.onClick.AddListener(() => SwitchTab(AdminTab.Tune));
+        tabShellButton      ?.onClick.AddListener(() => SwitchTab(AdminTab.Shell));
+        tabExperienceButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Experience));
 
         // 「花火の型」タブの中身。並ぶボタンは型そのものなので、
         // 一覧が実行時にしか分からない（Asset を差し替えれば変わる）。
@@ -1012,6 +1051,79 @@ public class AdminUIManager : MonoBehaviour
         ApplyToggleVisual(sfxToggleButton, sfxToggleText, "宇宙効果音",
                           _spaceMode != null && _spaceMode.SpaceAudioSetting);
 
+    // ── 体験（コンボ・アンサンブル）──
+    // 宇宙モードと同じ構造（マスター1個＋個別スイッチ、マスターOFF中も個別設定は保持）。
+    // マスターOFFのときは ExperienceDirector.RoutesGestures が false になり、
+    // FireworkLauncher が従来経路でジェスチャーに反応する（回帰確認用の逃げ道）
+    private void OnExpMasterClicked()
+    {
+        if (_experience == null) return;
+        _experience.ToggleMaster();
+        UpdateExpMasterLabel();
+        Debug.Log($"[AdminUI] 体験演出: {(_experience.MasterEnabled ? "ON" : "OFF")}");
+    }
+
+    private void UpdateExpMasterLabel() =>
+        ApplyToggleVisual(expMasterButton, expMasterText, "体験演出",
+                          _experience != null && _experience.MasterEnabled);
+
+    private void OnComboClicked()
+    {
+        if (_experience == null) return;
+        _experience.ToggleCombo();
+        UpdateComboLabel();
+    }
+
+    private void UpdateComboLabel() =>
+        ApplyToggleVisual(comboButton, comboText, "コンボ",
+                          _experience != null && _experience.ComboSetting);
+
+    private void OnComboNumberClicked()
+    {
+        if (_experience == null) return;
+        _experience.ToggleComboNumber();
+        UpdateComboNumberLabel();
+    }
+
+    private void UpdateComboNumberLabel() =>
+        ApplyToggleVisual(comboNumberButton, comboNumberText, "コンボの数字",
+                          _experience != null && _experience.ComboNumberSetting);
+
+    private void OnComboTrailClicked()
+    {
+        if (_experience == null) return;
+        _experience.ToggleComboTrail();
+        UpdateComboTrailLabel();
+    }
+
+    private void UpdateComboTrailLabel() =>
+        ApplyToggleVisual(comboTrailButton, comboTrailText, "コンボの光跡",
+                          _experience != null && _experience.ComboTrailSetting);
+
+    private void OnEnsembleClicked()
+    {
+        if (_experience == null) return;
+        _experience.ToggleEnsemble();
+        UpdateEnsembleLabel();
+    }
+
+    private void UpdateEnsembleLabel() =>
+        ApplyToggleVisual(ensembleButton, ensembleText, "いっしょに",
+                          _experience != null && _experience.EnsembleSetting);
+
+    // 花火をその人の位置から打つか（ON）、常に画面中央から打つか（OFF）。
+    // FireworkLauncher.LaunchAtScreenCenter を裏返した値がこのボタンの ON/OFF になる
+    private void OnPersonPosClicked()
+    {
+        if (_launcher == null) return;
+        _launcher.LaunchAtScreenCenter = !_launcher.LaunchAtScreenCenter;
+        UpdatePersonPosLabel();
+    }
+
+    private void UpdatePersonPosLabel() =>
+        ApplyToggleVisual(personPosButton, personPosText, "人の位置から打つ",
+                          _launcher != null && !_launcher.LaunchAtScreenCenter);
+
     // ── タブ ──
     //
     // 3枚のうち1枚だけを SetActive(true) にする。親（AdminPanel）の
@@ -1027,25 +1139,28 @@ public class AdminUIManager : MonoBehaviour
     {
         _activeTab = tab;
 
-        if (tabBasicPage != null) tabBasicPage.gameObject.SetActive(tab == AdminTab.Basic);
-        if (tabSpacePage != null) tabSpacePage.gameObject.SetActive(tab == AdminTab.Space);
-        if (tabTunePage  != null) tabTunePage .gameObject.SetActive(tab == AdminTab.Tune);
-        if (tabShellPage != null) tabShellPage.gameObject.SetActive(tab == AdminTab.Shell);
+        if (tabBasicPage      != null) tabBasicPage     .gameObject.SetActive(tab == AdminTab.Basic);
+        if (tabSpacePage      != null) tabSpacePage     .gameObject.SetActive(tab == AdminTab.Space);
+        if (tabTunePage       != null) tabTunePage      .gameObject.SetActive(tab == AdminTab.Tune);
+        if (tabShellPage      != null) tabShellPage     .gameObject.SetActive(tab == AdminTab.Shell);
+        if (tabExperiencePage != null) tabExperiencePage.gameObject.SetActive(tab == AdminTab.Experience);
 
-        ApplyTabVisual(tabBasicButton, tabBasicText, tab == AdminTab.Basic);
-        ApplyTabVisual(tabSpaceButton, tabSpaceText, tab == AdminTab.Space);
-        ApplyTabVisual(tabTuneButton,  tabTuneText,  tab == AdminTab.Tune);
-        ApplyTabVisual(tabShellButton, tabShellText, tab == AdminTab.Shell);
+        ApplyTabVisual(tabBasicButton,      tabBasicText,      tab == AdminTab.Basic);
+        ApplyTabVisual(tabSpaceButton,      tabSpaceText,      tab == AdminTab.Space);
+        ApplyTabVisual(tabTuneButton,       tabTuneText,       tab == AdminTab.Tune);
+        ApplyTabVisual(tabShellButton,      tabShellText,      tab == AdminTab.Shell);
+        ApplyTabVisual(tabExperienceButton, tabExperienceText, tab == AdminTab.Experience);
 
         if (tabHelpText != null)
         {
             tabHelpText.text = tab switch
             {
-                AdminTab.Space => "宇宙モードONで枠・UFO・宇宙花火が有効。個別スイッチはOFF中も保存されます",
-                AdminTab.Tune  => "右へ動かすほど反応しにくくなります（誤発火を減らしたいときは右へ）",
-                AdminTab.Shell => "型を押すとその花火だけを1発打ちます（開き方・落ち方の確認用）",
-                _              => "テスト打上=花火を1発試す ／ 丸窓=映像をドーム型に切り抜く表示 ／ " +
-                                  "花火ごとの細かさは下の一覧の［細かさ］から",
+                AdminTab.Space      => "宇宙モードONで枠・UFO・宇宙花火が有効。個別スイッチはOFF中も保存されます",
+                AdminTab.Tune       => "右へ動かすほど反応しにくくなります（誤発火を減らしたいときは右へ）",
+                AdminTab.Shell      => "型を押すとその花火だけを1発打ちます（開き方・落ち方の確認用）",
+                AdminTab.Experience => "体験演出ONでコンボ・いっしょにが有効。個別スイッチはOFF中も保存されます",
+                _                   => "テスト打上=花火を1発試す ／ 丸窓=映像をドーム型に切り抜く表示 ／ " +
+                                       "花火ごとの細かさは下の一覧の［細かさ］から",
             };
         }
     }
@@ -1172,7 +1287,7 @@ public class AdminUIManager : MonoBehaviour
         if (_gesture != null)
         {
             InitSlider(handUpSlider,   _gesture.HandUpThreshold,  v => { _gesture.HandUpThreshold  = v; UpdateHandUpLabel();   });
-            InitSlider(jumpSlider,     _gesture.JumpThreshold,    v => { _gesture.JumpThreshold    = v; UpdateJumpLabel();     });
+            InitSlider(jumpSlider,     _gesture.JumpRiseThreshold, v => { _gesture.JumpRiseThreshold = v; UpdateJumpLabel();   });
             InitSlider(cooldownSlider, _gesture.GestureCooldown,  v => { _gesture.GestureCooldown  = v; UpdateCooldownLabel(); });
             InitSlider(holdSlider,     _gesture.PoseHoldDuration, v => { _gesture.PoseHoldDuration = v; UpdateHoldLabel();     });
         }
@@ -1259,9 +1374,11 @@ public class AdminUIManager : MonoBehaviour
     private void UpdateJumpLabel()
     {
         if (jumpText == null) return;
+        // 「きびしさ」ではなく「高さ」。旧実装は瞬間の上昇速度のきびしさだったが、
+        // 今は「立っている高さから肩幅比でどれだけ上がったか」を見ているため
         jumpText.text = _gesture != null
-            ? $"ジャンプ判定のきびしさ  {_gesture.JumpThreshold:F2}（肩幅比）"
-            : "ジャンプ判定のきびしさ  ―";
+            ? $"ジャンプの高さ  {_gesture.JumpRiseThreshold:F2}（肩幅比）"
+            : "ジャンプの高さ  ―";
     }
 
     private void UpdateCooldownLabel()

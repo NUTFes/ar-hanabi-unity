@@ -27,9 +27,10 @@ using UnityEngine;
 //
 //   なお PoseCoordinateUtil.cs の冒頭には「FireworkLauncher は変換結果の y を
 //   乱数で上書きして捨てており、使っているのは x だけ」と書かれているが、
-//   この変更でその前提は成り立たなくなった（Launcher はもう PoseCoordinateUtil を
-//   使わない）。PoseCoordinateUtil 自体は SkeletonRenderer のフォールバック経路で
-//   現役なのでそのまま残してある。
+//   この変更でその前提は成り立たなくなった。さらに体験設計（人の位置から打ち上げる
+//   機能）の追加で、Launcher は再び PoseCoordinateUtil を使うようになっている
+//  （ResolveCenterU が PoseCoordinateUtil.LandmarkToViewport 経由で関節座標を
+//    Quad 基準の正確な画面位置に変換する。launchAtScreenCenter が OFF のときだけ）。
 //
 // ── 廃止したフィールド ──
 //   launchHeightMin / launchHeightMax / imageFireworkScale /
@@ -108,8 +109,22 @@ public class FireworkLauncher : MonoBehaviour
     [SerializeField] private float launchDistance = 5f;
 
     [Tooltip("ON : 常に画面中央を基準に打ち上げる（中心がど真ん中に来る）\n" +
-             "OFF: 従来どおり人の横位置に追従する")]
+             "OFF: 従来どおり人の横位置に追従する\n\n" +
+             "Admin画面（体験タブ）から切り替えられるよう SettingsStore で永続化する。\n" +
+             "コードから読み書きするときは LaunchAtScreenCenter プロパティを使うこと")]
     [SerializeField] private bool launchAtScreenCenter = true;
+
+    [Tooltip("カメラ映像を貼っている Quad（CameraBackground）。SkeletonRenderer と同じものを指定する。\n" +
+             "指定すると、人の関節座標を Quad 経由で画面上の実際の位置に変換してから\n" +
+             "打ち上げ位置を決める（骨の見た目の位置と花火の打ち上げ位置を一致させるため。\n" +
+             "詳しい理由は PoseCoordinateUtil.LandmarkToViewport のコメントを参照）。\n" +
+             "未指定なら、関節座標をそのままビューポート位置として使う簡易フォールバックになる")]
+    [SerializeField] private Transform backgroundQuad;
+
+    [Tooltip("launchAtScreenCenter が OFF のとき、打ち上げ位置の横方向を [margin, 1-margin] に\n" +
+             "収める（ジッターを足す前の時点で）。0.12 なら画面幅の左右12%を必ず余白として\n" +
+             "確保し、画面のいちばん端に立っている人でも花火が画面内に収まるようにする")]
+    [SerializeField, Range(0f, 0.3f)] private float launchEdgeMarginViewport = 0.12f;
 
     [Tooltip("打ち上げ位置に加えるばらつき。画面サイズに対する割合（±）。\n" +
              "x=0.08 なら画面幅の ±8% の範囲で左右に散る")]
@@ -120,6 +135,12 @@ public class FireworkLauncher : MonoBehaviour
 
     [Tooltip("ジャンプで横にずれる最大量。画面幅に対する割合（±）")]
     [SerializeField] private float jumpSpreadViewport = 0.15f;
+
+    // ExperienceDirector（FireworkPlan.Individual）が段階1（コンボの初回）で
+    // 従来の LaunchForGesture と同じ見た目を再現するために読む。
+    // 同じ値を2箇所で持つと調整のたびにズレるため、単一の情報源として公開する
+    public float PairSeparationViewport => pairSeparationViewport;
+    public float JumpSpreadViewport     => jumpSpreadViewport;
 
     [Header("花火の大きさ")]
     [Tooltip("画像花火が画面の高さの何割を占めるか。1.0 で画面いっぱい。\n" +
@@ -162,6 +183,7 @@ public class FireworkLauncher : MonoBehaviour
     {
         enableImageFirework = SettingsStore.GetBool($"{nameof(FireworkLauncher)}.{nameof(enableImageFirework)}", enableImageFirework);
         imageFireworkChance = SettingsStore.GetFloat($"{nameof(FireworkLauncher)}.{nameof(imageFireworkChance)}", imageFireworkChance);
+        launchAtScreenCenter = SettingsStore.GetBool($"{nameof(FireworkLauncher)}.{nameof(launchAtScreenCenter)}", launchAtScreenCenter);
     }
 
     // ── Admin画面（SETTINGS）からの調整用 ──
@@ -175,6 +197,13 @@ public class FireworkLauncher : MonoBehaviour
     {
         get => imageFireworkChance;
         set { imageFireworkChance = value; SettingsStore.SetFloat($"{nameof(FireworkLauncher)}.{nameof(imageFireworkChance)}", value); }
+    }
+
+    /// <summary>ON: 常に画面中央から打ち上げる／OFF: 人の位置から打ち上げる（体験タブから切替）</summary>
+    public bool LaunchAtScreenCenter
+    {
+        get => launchAtScreenCenter;
+        set { launchAtScreenCenter = value; SettingsStore.SetBool($"{nameof(FireworkLauncher)}.{nameof(launchAtScreenCenter)}", value); }
     }
 
     // ── イベント購読 ──
@@ -191,7 +220,24 @@ public class FireworkLauncher : MonoBehaviour
     }
 
     // ── ジェスチャー受信 ──
+    // ExperienceDirector が有効（RoutesGestures）なときは、そちらが個々の花火を
+    // コンボ・アンサンブルを踏まえて打つ（FireworkPlan.Individual／Ensemble）ため、
+    // ここでは何もしない。二重発火を避けるため、発射の直前（このメソッドの先頭）で
+    // 確認するだけにしてある（PoseEventBus の購読を止めたり、購読順に依存させたりしない）。
+    // Director が存在しない・無効（マスターOFF）なシーンでは、ここが従来どおり唯一の
+    // 打ち上げ経路になる（回帰確認用の逃げ道）
     private void OnGestureDetected(int personIndex, GestureType gesture, Vector2 normalizedPos)
+    {
+        if (ExperienceDirector.Instance != null && ExperienceDirector.Instance.RoutesGestures) return;
+
+        LaunchForGesture(personIndex, gesture, normalizedPos);
+    }
+
+    /// <summary>
+    /// ジェスチャー1件から、従来どおりの花火を打ち上げる（通常演出の窓口）。
+    /// OnGestureDetected の中身を公開したもの。Director 不在時のフォールバックにも使う
+    /// </summary>
+    public void LaunchForGesture(int personIndex, GestureType gesture, Vector2 normalizedPos)
     {
         Debug.Log($"[Launcher] Person{personIndex} {gesture} pos={normalizedPos}");
 
@@ -203,25 +249,48 @@ public class FireworkLauncher : MonoBehaviour
                 // 2発上がる。2発目を少しずらして「ドン、ドン」と聞かせる。
                 // 完全に同時だと音量が倍になって不自然になるので、
                 // 音だけでなく上昇そのものをずらす
-                StartCoroutine(LaunchSequence(normalizedPos, -pairSeparationViewport * 0.5f,
-                                              isLarge: true, startDelay: 0f, volumeScale: 1f));
-                StartCoroutine(LaunchSequence(normalizedPos,  pairSeparationViewport * 0.5f,
-                                              isLarge: true,
-                                              startDelay: Random.Range(0.06f, 0.18f),
-                                              volumeScale: 0.8f));
+                Launch(new LaunchRequest
+                {
+                    normalizedPos = normalizedPos,
+                    xOffsetViewport = -pairSeparationViewport * 0.5f,
+                    isLarge = true,
+                    volumeScale = 1f,
+                });
+                Launch(new LaunchRequest
+                {
+                    normalizedPos = normalizedPos,
+                    xOffsetViewport = pairSeparationViewport * 0.5f,
+                    isLarge = true,
+                    startDelay = Random.Range(0.06f, 0.18f),
+                    volumeScale = 0.8f,
+                });
                 break;
 
             case GestureType.OneHandUp:
-                StartCoroutine(LaunchSequence(normalizedPos, 0f,
-                                              isLarge: false, startDelay: 0f, volumeScale: 1f));
+                Launch(new LaunchRequest
+                {
+                    normalizedPos = normalizedPos,
+                    isLarge = false,
+                    volumeScale = 1f,
+                });
                 break;
 
             case GestureType.Jump:
-                StartCoroutine(LaunchSequence(normalizedPos,
-                                              Random.Range(-jumpSpreadViewport, jumpSpreadViewport),
-                                              isLarge: false, startDelay: 0f, volumeScale: 1f));
+                Launch(new LaunchRequest
+                {
+                    normalizedPos = normalizedPos,
+                    xOffsetViewport = Random.Range(-jumpSpreadViewport, jumpSpreadViewport),
+                    isLarge = false,
+                    volumeScale = 1f,
+                });
                 break;
         }
+    }
+
+    /// <summary>花火を1発打ち上げる（打ち上げ→開花のひと続きをコルーチンで開始する）</summary>
+    public void Launch(in LaunchRequest request)
+    {
+        StartCoroutine(LaunchSequence(request));
     }
 
     // ── 打ち上げ → 開花のひと続き ──
@@ -234,13 +303,9 @@ public class FireworkLauncher : MonoBehaviour
     // 画像花火か型花火かはこの時点で確定させる。
     // 型によって開く高さ（launchViewportY）が違うので、
     // 上昇の到達点を決めるには先に型を選んでおく必要がある。
-    private System.Collections.IEnumerator LaunchSequence(
-        Vector2 normalizedPos, float xOffsetViewport,
-        bool isLarge, float startDelay, float volumeScale,
-        bool forceImage = false, bool forceDecided = false,
-        ShellPreset forcedPreset = null)
+    private System.Collections.IEnumerator LaunchSequence(LaunchRequest request)
     {
-        if (startDelay > 0f) yield return new WaitForSeconds(startDelay);
+        if (request.startDelay > 0f) yield return new WaitForSeconds(request.startDelay);
 
         if (mainCamera == null)
         {
@@ -248,25 +313,34 @@ public class FireworkLauncher : MonoBehaviour
             yield break;
         }
 
+        Vector2 normalizedPos     = request.normalizedPos;
+        float   xOffsetViewport   = request.xOffsetViewport;
+        bool    isLarge           = request.isLarge;
+        float   volumeScale       = request.volumeScale;
+        ShellPreset forcedPreset  = request.forcedPreset;
+
         // 画像花火にするかを先に決める。
         // 打てるエントリが0件なら最初から型花火にする（以前は打ってから
         // フォールバックしていたが、それだと開く高さを先に決められない）。
-        // forceDecided が true のときは呼び出し側が既に抽選している
+        // request.image が Auto 以外のときは呼び出し側が既に抽選している
         // forcedPreset は Admin画面の「花火」タブから型を指名して打つときに渡る。
         // その場合は画像花火の抽選そのものを飛ばす（指名した型を必ず打つのが目的なので、
         // 確率で画像花火に化けてしまうとテストにならない）
         bool useImage = forcedPreset != null
                         ? false
-                        : forceDecided
-                          ? forceImage
-                          : enableImageFirework
-                            && ActiveImageCount > 0
-                            && Random.value < imageFireworkChance;
+                        : request.image switch
+                          {
+                              ImageDecision.ForceImage => true,
+                              ImageDecision.ForceShell => false,
+                              _ => enableImageFirework
+                                   && ActiveImageCount > 0
+                                   && Random.value < imageFireworkChance,
+                          };
 
         ShellPreset preset = forcedPreset;
         if (preset == null && !useImage && useShellPresets)
         {
-            preset = PickPreset(isLarge);
+            preset = PickPreset(isLarge, request.nameFilter);
             if (preset == null)
             {
                 Debug.LogError("[Launcher] 打ち上げる型が1つもありません");
@@ -310,7 +384,8 @@ public class FireworkLauncher : MonoBehaviour
 
             FireworkAudioPlayer.Instance?.PlayLaunch(fromPos);
             SpawnLaunchTrail(fromPos, burstPos, rise, isLarge,
-                             preset != null ? preset.riseTrailScale : 1f);
+                             preset != null ? preset.riseTrailScale : 1f,
+                             request.comboStage);
 
             yield return new WaitForSeconds(rise);
         }
@@ -324,7 +399,7 @@ public class FireworkLauncher : MonoBehaviour
         }
         else if (preset != null)
         {
-            LaunchShellWithPreset(preset, burstPos, isLarge);
+            LaunchShellWithPreset(preset, burstPos, isLarge, request.EffectiveSizeScale);
         }
         else
         {
@@ -377,16 +452,34 @@ public class FireworkLauncher : MonoBehaviour
                            RiseSecondsMin, RiseSecondsMax);
     }
 
-    // 上昇の光跡を出す
+    // 上昇の光跡を出す。
+    // comboStage（LaunchRequest 由来。0=通常）が立っていれば、コンボが育つほど
+    // 昇りが太く・明るく・火の粉が多くなる（ExperienceDirector の見せ方の1つ）。
+    // 0 のとき（Director 不在／マスターOFF／ComboTrailEnabled OFF）は従来と完全に同じ見た目になる
     private void SpawnLaunchTrail(Vector3 from, Vector3 to, float seconds, bool isLarge,
-                                  float trailScale = 1f)
+                                  float trailScale = 1f, int comboStage = 0)
     {
         var go = new GameObject("LaunchTrail");
         go.transform.position = from;
 
         var fx = go.AddComponent<LaunchTrailEffect>();
         fx.SetShader(particleColorShader);
-        fx.sparkCount = Mathf.Max(0, Mathf.RoundToInt(fx.sparkCount * trailScale));
+
+        float sparkMul = 1f + 0.30f * comboStage;
+        float headMul  = 1f + 0.15f * comboStage;
+        float emitMul  = 1f + 0.12f * comboStage;
+
+        fx.sparkCount = Mathf.Max(0, Mathf.RoundToInt(fx.sparkCount * trailScale * sparkMul));
+        fx.headSize          *= headMul;
+        fx.emissiveIntensity *= emitMul;
+
+        // フィニッシャー段階は色を白寄りにして、明確に「特別な1発」だと分かるようにする
+        if (comboStage >= 5)
+        {
+            fx.headColor  = Color.Lerp(fx.headColor,  Color.white, 0.6f);
+            fx.sparkColor = Color.Lerp(fx.sparkColor, Color.white, 0.6f);
+        }
+
         fx.Launch(from, to, seconds, isLarge ? 1f : 0.75f);
     }
 
@@ -414,9 +507,13 @@ public class FireworkLauncher : MonoBehaviour
                      && ActiveImageCount > 0
                      && Random.value < imageFireworkChance;
 
-        StartCoroutine(LaunchSequence(new Vector2(0.5f, 0.5f), 0f,
-                                      isLarge, startDelay: 0f, volumeScale: 1f,
-                                      forceImage: useImage, forceDecided: true));
+        Launch(new LaunchRequest
+        {
+            normalizedPos = new Vector2(0.5f, 0.5f),
+            isLarge = isLarge,
+            volumeScale = 1f,
+            image = useImage ? ImageDecision.ForceImage : ImageDecision.ForceShell,
+        });
 
         return useImage
                ? FireworkAudioPlayer.FireworkKind.Image
@@ -469,9 +566,13 @@ public class FireworkLauncher : MonoBehaviour
             return false;
         }
 
-        StartCoroutine(LaunchSequence(new Vector2(0.5f, 0.5f), 0f,
-                                      isLarge, startDelay: 0f, volumeScale: 1f,
-                                      forcedPreset: preset));
+        Launch(new LaunchRequest
+        {
+            normalizedPos = new Vector2(0.5f, 0.5f),
+            isLarge = isLarge,
+            volumeScale = 1f,
+            forcedPreset = preset,
+        });
         return true;
     }
 
@@ -484,7 +585,11 @@ public class FireworkLauncher : MonoBehaviour
     // ── 型花火（割物・ポカ物・小割物）の開花 ──
     // 型と開花位置は LaunchSequence が先に決めている
     // （型ごとに開く高さが違うため、上昇の到達点を出すには先に型が必要）
-    private void LaunchShellWithPreset(ShellPreset preset, Vector3 worldPos, bool isLarge)
+    //
+    // requestSizeScale は LaunchRequest 経由の追加倍率（既定1）。コンボの軽い花火を
+    // 小さくしたり、アンサンブルを大きくしたりするのに使う。
+    // メソッド内で計算する描画サイズ用のローカル変数 sizeScale と名前が衝突するため別名にしてある
+    private void LaunchShellWithPreset(ShellPreset preset, Vector3 worldPos, bool isLarge, float requestSizeScale = 1f)
     {
         var go = new GameObject($"Shell_{preset.name}");
         go.transform.position = worldPos;
@@ -509,9 +614,9 @@ public class FireworkLauncher : MonoBehaviour
         float radius   = preset.burstSpeed * Mathf.Max(0.01f, preset.dragTau);
         float halfView = FrustumHeightAt(launchDistance) * 0.5f * shellScreenFillRatio;
 
-        // 型ごと／大玉小玉の倍率は位置にもサイズにも等しく効かせる
-        // （小玉は広がりも粒も小さくなってほしい）
-        float common = preset.sizeMultiplier * (isLarge ? 1f : smallShellScale);
+        // 型ごと／大玉小玉／LaunchRequest.sizeScale の倍率は位置にもサイズにも等しく効かせる
+        // （小玉は広がりも粒も小さくなってほしい。コンボ・アンサンブルの倍率も同様）
+        float common = preset.sizeMultiplier * (isLarge ? 1f : smallShellScale) * requestSizeScale;
 
         float posScale  = (radius > 0.001f ? halfView / radius : 1f) * common;
         float sizeScale = halfView / ShellSizeReferenceRadius        * common;
@@ -535,12 +640,18 @@ public class FireworkLauncher : MonoBehaviour
     //
     // 名前フィルタ・category フィルタのどちらか（または両方）で該当が0件になったときは
     // 全種から選ぶ（無音の空振りを作らない、既存の方針をそのまま踏襲）
-    private ShellPreset PickPreset(bool isLarge)
+    //
+    // nameFilterOverride は LaunchRequest.nameFilter から渡される（コンボ・アンサンブル・
+    // フィニッシャーなど、状況ごとに型を絞りたいときに使う）。null/空なら従来どおり
+    // isLarge に応じた既定（largeShellNames / smallShellNames）を使う
+    private ShellPreset PickPreset(bool isLarge, string[] nameFilterOverride = null)
     {
         var library = ResolveLibrary();
         if (library.Count == 0) return null;
 
-        var nameFilter = isLarge ? largeShellNames : smallShellNames;
+        var nameFilter = (nameFilterOverride != null && nameFilterOverride.Length > 0)
+                          ? nameFilterOverride
+                          : (isLarge ? largeShellNames : smallShellNames);
         var mode = SpaceModeController.Instance?.FireworkMode
                    ?? SpaceModeController.SpaceFireworkMode.Off;
 
@@ -642,7 +753,7 @@ public class FireworkLauncher : MonoBehaviour
         // ── 最終位置（横）──
         // ±2σ で打ち切る。正規分布をそのまま使うと稀に大きく外れ、
         // クランプで画面端に張り付く発射が混ざるため
-        float center = launchAtScreenCenter ? 0.5f : Mathf.Clamp01(normalizedPos.x);
+        float center = ResolveCenterU(normalizedPos);
         float spread = Mathf.Clamp(SampleStandardNormal(), -2f, 2f) * preset.finalSpreadX;
         float uFinal = center + spread + xOffsetViewport;
 
@@ -701,6 +812,25 @@ public class FireworkLauncher : MonoBehaviour
         return Mathf.Sqrt(-2f * Mathf.Log(u1)) * Mathf.Cos(2f * Mathf.PI * u2);
     }
 
+    // ── 打ち上げ座標の横方向（u）の決定 ──
+    // launchAtScreenCenter が ON なら常に画面中央（0.5）。
+    // OFF のときは人の関節座標を Quad 経由で画面上の実際の位置に変換し
+    //（PoseCoordinateUtil.LandmarkToViewport。理由はそちらのコメントを参照）、
+    // [launchEdgeMarginViewport, 1-launchEdgeMarginViewport] の範囲へ remap する。
+    // clamp ではなく remap にしているのは、画面のいちばん端に立っている人でも
+    // ジッターを足した上でなお画面内に収まる余白を必ず確保するため
+    // （ResolveLaunchPosition と ResolveDriftingLaunchPosition の2箇所で使うため集約した）
+    private float ResolveCenterU(Vector2 normalizedPos)
+    {
+        if (launchAtScreenCenter) return 0.5f;
+
+        var viewport = PoseCoordinateUtil.LandmarkToViewport(
+            mainCamera, backgroundQuad, normalizedPos.x, normalizedPos.y);
+        float x = Mathf.Clamp01(viewport.x);
+
+        return Mathf.Lerp(launchEdgeMarginViewport, 1f - launchEdgeMarginViewport, x);
+    }
+
     // ── 打ち上げ座標の決定 ──
     // viewportY で高さを指定する。0.5 が画面のど真ん中。
     // 垂れる型（冠・柳）は高く開かないと落ちる部分が画面外に出るため、
@@ -710,7 +840,7 @@ public class FireworkLauncher : MonoBehaviour
     {
         // 0.5, 0.5 が画面のど真ん中。ここを基準にすることで
         // 解像度・アスペクト比・FOV が変わっても中心がずれない
-        float u = launchAtScreenCenter ? 0.5f : Mathf.Clamp01(normalizedPos.x);
+        float u = ResolveCenterU(normalizedPos);
         float v = viewportY;
 
         u += xOffsetViewport + Random.Range(-launchViewportJitter.x, launchViewportJitter.x);
@@ -721,6 +851,18 @@ public class FireworkLauncher : MonoBehaviour
         v = Mathf.Clamp01(v);
 
         return mainCamera.ViewportToWorldPoint(new Vector3(u, v, launchDistance));
+    }
+
+    /// <summary>
+    /// 体験設計のオーバーレイ（コンボ数字など）が、その人の花火と同じ横位置を得るために使う。
+    /// 実際の花火の発射位置決定と全く同じロジック（launchAtScreenCenter・Quad変換・remap・
+    /// ジッター）を通すので、花火とオーバーレイの横位置は常に一致する。
+    /// viewportY はオーバーレイ側が自由に決めてよい（花火の開花高さとは無関係）
+    /// </summary>
+    public Vector3? ResolveOverlayWorldPosition(Vector2 normalizedPos, float viewportY)
+    {
+        if (mainCamera == null) return null;
+        return ResolveLaunchPosition(normalizedPos, 0f, viewportY);
     }
 
     // ── VFX Prefab 打ち上げ ──

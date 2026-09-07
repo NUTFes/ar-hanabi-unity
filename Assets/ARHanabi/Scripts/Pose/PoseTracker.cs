@@ -12,7 +12,7 @@ using UnityEngine;
 //   入れ替わる、といっただけで添字がシャッフルされる。
 //   添字をそのまま personIndex として使うと、
 //     - SkeletonRenderer の色分け（personIndex % 5）が別人に飛び移る
-//     - GestureDetector の PersonState（prevHipY / ポーズ保持時間 / クールダウン）が
+//     - GestureDetector の PersonState（腰・足首の履歴 / ポーズ保持時間 / クールダウン）が
 //       別人の状態を引き継ぎ、誤発火や発火漏れが起きる
 //   という形で破綻する。3人目が抜けたら 4人目・5人目の添字が繰り上がる、という
 //   ごく普通の出来事でも起きるので「稀なケース」ではない。

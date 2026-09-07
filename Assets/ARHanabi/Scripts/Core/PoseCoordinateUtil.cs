@@ -44,4 +44,38 @@ public static class PoseCoordinateUtil
 
         return camera.ScreenToWorldPoint(ToScreenPoint(normalizedX, normalizedY, distance));
     }
+
+    // ── Quad 面上へのマッピング（SkeletonRenderer と共通）──
+    // カメラ映像を貼った Quad（CameraBackground）は画面よりかなり大きく張り出している
+    //（MainScene の実測では横に画面外へ最大 18%程度）。そのため関節の生座標（0〜1）を
+    // そのまま画面上の割合として使うと、画面端に近い人ほど実際に見えている位置と
+    // ズレる（中央は一致するが、端では画面幅の1割以上ズレ得る）。
+    //
+    // Quad は「動画がそのまま貼られた面」なので、関節座標を Quad の UV として
+    // そのまま面上に置けば、動画に映っている本人の位置と一致する
+    //（SkeletonRenderer が骨を描くのと同じ考え方）。
+    //
+    // Unity 内蔵 Quad メッシュはローカル 1x1・原点中心・+X が右 / +Y が上で、
+    // テクスチャの uv=(0,0) がローカル (-0.5,-0.5) に対応する。
+    // localScale がそのまま表示サイズになるので、(u-0.5, v-0.5) を TransformPoint
+    // すれば uv=(u,v) の位置にある面上の点がそのまま得られる。
+    public static Vector3 LandmarkToQuadPoint(Transform backgroundQuad, float u, float v)
+    {
+        return backgroundQuad.TransformPoint(
+            new Vector3(Mathf.Clamp01(u) - 0.5f, Mathf.Clamp01(v) - 0.5f, 0f));
+    }
+
+    // ── 関節座標 → 画面上のビューポート位置 ──
+    // 一度 Quad 面上のワールド座標に変換してから WorldToViewportPoint に通すことで、
+    // 「動画に映っている本人の位置」を画面上の実際の割合（0〜1が画面内）として得る。
+    // backgroundQuad が未設定なら Quad マッピングを使わず (u, v) をそのまま返す
+    //（画面全体マッピングへのフォールバック。ToWorldPoint と同じ考え方）
+    public static Vector2 LandmarkToViewport(Camera camera, Transform backgroundQuad, float u, float v)
+    {
+        if (camera == null || backgroundQuad == null)
+            return new Vector2(Mathf.Clamp01(u), Mathf.Clamp01(v));
+
+        var viewport = camera.WorldToViewportPoint(LandmarkToQuadPoint(backgroundQuad, u, v));
+        return new Vector2(viewport.x, viewport.y);
+    }
 }

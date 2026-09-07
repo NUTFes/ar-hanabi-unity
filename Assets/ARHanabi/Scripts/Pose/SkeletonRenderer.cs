@@ -510,15 +510,15 @@ public class SkeletonRenderer : MonoBehaviour
     }
 
     // ── Quad 面上へのマッピング ──
-    // Unity 内蔵 Quad メッシュはローカル 1x1・原点中心・+X が右 / +Y が上で、
-    // テクスチャの uv=(0,0) がローカル (-0.5,-0.5) に対応する。
-    // localScale がそのまま表示サイズになるので、(u-0.5, v-0.5) を TransformPoint
-    // すれば uv=(u,v) の位置にある面上の点がそのまま得られる。
-    // Transform を経由するので、Quad を動かしても拡大しても自動で追従する。
+    // 面上の点そのものは PoseCoordinateUtil.LandmarkToQuadPoint と共通
+    //（FireworkLauncher が打ち上げ位置を人の位置に合わせるのにも同じ変換を使う。
+    //  骨の見た目の位置と花火の打ち上げ位置を一致させるため）。
+    // ここではさらに、線が Quad と同じ深さだと Z ファイトで消えてしまうのを
+    // 避けるためカメラ側へ少し寄せる処理を足す（この寄せは描画専用の都合なので
+    // 共通関数には入れていない）。
     private Vector3 LandmarkToQuadPoint(float u, float v)
     {
-        var point = backgroundQuad.TransformPoint(
-            new Vector3(Mathf.Clamp01(u) - 0.5f, Mathf.Clamp01(v) - 0.5f, 0f));
+        var point = PoseCoordinateUtil.LandmarkToQuadPoint(backgroundQuad, u, v);
 
         // Quad と同じ深さだと Z ファイトで線が消えるのでカメラ側へ少し寄せる
         if (mainCamera != null && quadOffset != 0f)

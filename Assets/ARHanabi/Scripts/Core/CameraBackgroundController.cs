@@ -33,8 +33,27 @@ using UnityEngine;
 public class CameraBackgroundController : MonoBehaviour
 {
     [SerializeField] private int webcamIndex  = 0;
+
+    [Tooltip("要求する解像度。0 にするとドライバ任せ（WebCamTexture に解像度を指定しない）。\n" +
+             "\n" +
+             "── 要求モードが原因でプロセスが即死することがある ──\n" +
+             "USB2.0 接続のカメラで 1280x720@30fps を無圧縮（YUY2）で要求すると\n" +
+             "約 55MB/s になり、USB2.0 の実効帯域（35〜40MB/s）を超える。\n" +
+             "ドライバが対応していないモードを要求した場合、開いた瞬間に\n" +
+             "Unity のプロセスが即死することが実際にあった（ログに \"Shut down.\" だけ残る）。\n" +
+             "落ちる場合は 640x480 → 0（ドライバ任せ）の順に下げて試すこと")]
     [SerializeField] private int targetWidth  = 640;
     [SerializeField] private int targetHeight = 480;
+
+    [Tooltip("要求するフレームレート。0 にするとドライバ任せ。\n" +
+             "解像度を下げたくない場合は、ここを 15 にして帯域を半分にする手もある")]
+    [SerializeField] private int targetFps = 30;
+
+    [Tooltip("この文字列を名前に含むカメラは一覧・切替の対象から除外する（部分一致・大小無視）。\n" +
+             "実カメラの台数だけで index を数えたいので、使わないデバイスはここへ入れる。\n" +
+             "OBS Virtual Camera は配信を ON にしていないと映像を返さないので既定で除外している")]
+    [SerializeField]
+    private string[] excludedDeviceNamePatterns = { "OBS Virtual Camera" };
 
     [Header("停止時の復帰")]
     [Tooltip("カメラの配信が止まった（isPlaying が false になった）ときに自動で再開を試みる。\n" +
@@ -80,7 +99,7 @@ public class CameraBackgroundController : MonoBehaviour
             if (_webCamTexture != null && !string.IsNullOrEmpty(_webCamTexture.deviceName))
                 return _webCamTexture.deviceName;
 
-            var devices = WebCamTexture.devices;
+            var devices = GetUsableDevices();
             if (webcamIndex >= 0 && webcamIndex < devices.Length)
                 return devices[webcamIndex].name;
 
@@ -95,10 +114,37 @@ public class CameraBackgroundController : MonoBehaviour
     // またがって電源を落とすため、前回 Admin 画面で選んだカメラを覚えておきたい
     private const string WebcamIndexKey = nameof(CameraBackgroundController) + "." + nameof(webcamIndex);
 
+    // 「今カメラを開こうとしている最中」を表す永続フラグ。
+    //
+    // ── なぜ必要か（実際に起きた事故）──
+    //   デバイスによっては WebCamTexture を開いた瞬間にドライバ側でプロセスが即死する
+    //   （Unity のクラッシュハンドラも動かず、ログには "Shut down." だけが残る）。
+    //   C# の例外でもタイムアウトでもないので、コード側では一切受け止められない。
+    //   このとき「開こうとした index」が既に保存済みだと、次の起動でも同じデバイスを
+    //   開こうとして再び即死する ＝ 起動できない無限ループに陥る（実際に陥った）。
+    //
+    //   そこで「開く直前にフラグを立て、映像が来たことを確認してから倒す」ようにし、
+    //   起動時にフラグが立ったままなら「前回はそのindexで落ちた」と判断して
+    //   別のデバイスから試す。1回のクラッシュはもう避けられないが、
+    //   ループにはならない（＝人の手で PlayerPrefs を消す必要がなくなる）
+    private const string OpenInProgressKey = nameof(CameraBackgroundController) + ".openInProgress";
+
     private void Start()
     {
         _renderer  = GetComponent<Renderer>();
         webcamIndex = SettingsStore.GetInt(WebcamIndexKey, webcamIndex);
+
+        // 前回の起動がカメラを開いている途中で終わっている（＝そのデバイスで落ちた）なら、
+        // 同じ index を避けて次のデバイスから試す
+        if (SettingsStore.GetBool(OpenInProgressKey, false))
+        {
+            int crashed = webcamIndex;
+            webcamIndex = crashed + 1;
+            SettingsStore.SetBool(OpenInProgressKey, false);
+            Debug.LogWarning($"[CameraBG] 前回の起動は index {crashed} のカメラを開いている途中で終了しました。" +
+                             $"そのデバイスは避けて index {webcamIndex} から試します" +
+                             "（同じデバイスで再発するなら excludedDeviceNamePatterns に名前を追加してください）");
+        }
 
         // 以前はここで BeginOpenDevice(webcamIndex) を直接呼んでいたが、それだと
         // 範囲外の index（Inspector の設定ミス、あるいは別のPC・別のカメラ台数の
@@ -166,7 +212,37 @@ public class CameraBackgroundController : MonoBehaviour
         return slot;
     }
 
-    private void RefreshDeviceCount() => _deviceCount = WebCamTexture.devices.Length;
+    private void RefreshDeviceCount() => _deviceCount = GetUsableDevices().Length;
+
+    // WebCamTexture.devices から除外パターンに一致するデバイスを取り除く。
+    // 呼び出しごとに配列を作り直す（WebCamTexture.devices 自体もプロパティ呼び出しごとに
+    // デバイス列挙が走るため、フィルタの有無でコストの桁は変わらない）
+    private WebCamDevice[] GetUsableDevices()
+    {
+        var all = WebCamTexture.devices;
+        if (excludedDeviceNamePatterns == null || excludedDeviceNamePatterns.Length == 0)
+            return all;
+
+        var list = new System.Collections.Generic.List<WebCamDevice>(all.Length);
+        for (int i = 0; i < all.Length; i++)
+        {
+            if (!IsExcluded(all[i].name))
+                list.Add(all[i]);
+        }
+        return list.ToArray();
+    }
+
+    private bool IsExcluded(string deviceName)
+    {
+        for (int i = 0; i < excludedDeviceNamePatterns.Length; i++)
+        {
+            var pattern = excludedDeviceNamePatterns[i];
+            if (!string.IsNullOrEmpty(pattern) &&
+                deviceName.IndexOf(pattern, System.StringComparison.OrdinalIgnoreCase) >= 0)
+                return true;
+        }
+        return false;
+    }
 
     // 進行中のコルーチンがあれば止めてから開き直す。
     // _switching は「コルーチン開始前」に立てる。StartCoroutine は最初の yield まで
@@ -189,12 +265,12 @@ public class CameraBackgroundController : MonoBehaviour
         // 抜け道を作らずこのコルーチンの最後まで通す作りにしている。
         try
         {
-            var devices = WebCamTexture.devices;
+            var devices = GetUsableDevices();
             _deviceCount = devices.Length;
 
             if (_deviceCount == 0)
             {
-                Debug.LogError("カメラが見つかりません");
+                Debug.LogError("カメラが見つかりません（除外リストに一致するものしか無い場合も含む）");
                 yield break;
             }
 
@@ -206,9 +282,6 @@ public class CameraBackgroundController : MonoBehaviour
             }
 
             webcamIndex = index;
-            // Start() が丸めた値で開いた場合も含め、実際に確定した index を
-            // 保存し直す（自己修復: 次回はこの正常な値から始まる）
-            SettingsStore.SetInt(WebcamIndexKey, webcamIndex);
             LogDeviceList();
 
             // 古いテクスチャを解放する。参照を捨てるだけではデバイスが開いたままになり、
@@ -217,7 +290,27 @@ public class CameraBackgroundController : MonoBehaviour
 
             var device = devices[webcamIndex];
 
-            _webCamTexture = new WebCamTexture(device.name, targetWidth, targetHeight, 30);
+            // ここから先はプロセスが即死しうる区間（ドライバ次第）。
+            // 「開いている最中」を永続フラグで残しておき、映像が来たことを
+            // 確認できてから倒す（OpenInProgressKey のコメント参照）
+            SettingsStore.SetBool(OpenInProgressKey, true);
+
+            // 解像度・fps を 0 にしてある場合は指定せずに開く（ドライバが対応するモードを選ぶ）。
+            // 対応していないモードを要求すると開いた瞬間に即死するデバイスがあるため、
+            // 「まず開けること」を優先したいときの逃げ道
+            bool specifyMode = targetWidth > 0 && targetHeight > 0;
+
+            _webCamTexture = specifyMode
+                             ? (targetFps > 0
+                                ? new WebCamTexture(device.name, targetWidth, targetHeight, targetFps)
+                                : new WebCamTexture(device.name, targetWidth, targetHeight))
+                             : new WebCamTexture(device.name);
+
+            Debug.Log($"[CameraBG] '{device.name}' を開きます" +
+                      (specifyMode
+                       ? $"（要求 {targetWidth}x{targetHeight}" + (targetFps > 0 ? $"@{targetFps}fps）" : "）")
+                       : "（解像度・fpsはドライバ任せ）"));
+
             _webCamTexture.Play();
 
             // 映像が来ないデバイスを引くと WaitUntil が永久に待ち、_switching が
@@ -231,16 +324,30 @@ public class CameraBackgroundController : MonoBehaviour
 
             if (_webCamTexture.width <= 16)
             {
+                // 映像が来なかった index は保存しない（次の起動でまた同じ外れを引かせない）
+                SettingsStore.SetBool(OpenInProgressKey, false);
                 Debug.LogError($"[CameraBG] '{device.name}' が {openTimeoutSeconds} 秒以内に映像を返しませんでした。" +
                                "別の index を試してください");
                 yield break;
             }
 
+            // ここまで来たら「本当に映像が来ている」と確認できたので、初めて index を保存する。
+            //
+            // ── 以前は開く前に保存していた（事故の原因）──
+            //   開いた瞬間にプロセスが即死するデバイスがあると、死ぬ前に保存された index が
+            //   次の起動でも使われ、起動するたびに即死する無限ループになっていた。
+            //   保存を「成功の確認後」に限定すると、落ちても前回の正常な index が残る。
+            //   Start() が丸めた値で開いた場合の自己修復（次回はこの正常な値から始まる）も
+            //   この位置で同じように効く
+            SettingsStore.SetInt(WebcamIndexKey, webcamIndex);
+            SettingsStore.SetBool(OpenInProgressKey, false);
+
             // 要求解像度が通ったかを必ず残す。
             // 要求と実際が食い違う場合、デバイスが対応していないモードを要求しており
             // ドライバ側で近いモードに丸められている。1080p の無圧縮ストリームは
             // USB の帯域を使い切りやすく、配信が途中で落ちる（LEDが消える）原因になる。
-            if (_webCamTexture.width != targetWidth || _webCamTexture.height != targetHeight)
+            if (specifyMode &&
+                (_webCamTexture.width != targetWidth || _webCamTexture.height != targetHeight))
             {
                 Debug.LogWarning($"[CameraBG] 要求 {targetWidth}x{targetHeight} に対して " +
                                  $"実際は {_webCamTexture.width}x{_webCamTexture.height} で開始しました。" +
@@ -288,7 +395,7 @@ public class CameraBackgroundController : MonoBehaviour
     // availableResolutions は環境によって空を返すことがある（その場合は不明と出す）。
     private void LogDeviceList()
     {
-        var devices = WebCamTexture.devices;
+        var devices = GetUsableDevices();
         var sb = new System.Text.StringBuilder();
         sb.AppendLine($"[CameraBG] 検出したカメラ {devices.Length} 台（使用するのは index {webcamIndex}）");
 
