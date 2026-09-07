@@ -92,8 +92,8 @@ public class SkeletonRenderer : MonoBehaviour
 
     [Tooltip("OFF: 骨格の線を一切描かない。花火を見せることを優先する運用向け。\n" +
              "機能自体は残してあるので、ONに戻せば従来どおり描画される。\n" +
-             "実行中は ShowSkeleton プロパティ経由で切り替わる\n" +
-             "（CameraCircleMatte が丸い映像の演出中に OFF にし、解除時に元へ戻す）")]
+             "実行中は ShowSkeleton プロパティ経由で Admin画面から切り替わる。\n" +
+             "丸窓（ドーム）モードとは無関係な独立設定で、ドーム中でもONならボーンは出る")]
     [SerializeField] private bool showSkeleton = true;
 
     [Header("感知フラッシュ")]
@@ -187,6 +187,24 @@ public class SkeletonRenderer : MonoBehaviour
 
     // 購読済みかどうか。OnEnable と Start の二重購読を防ぐ
     private bool _subscribed;
+
+    // ── 永続化 ──
+    // ボーンの表示ON/OFFは Admin画面から切り替える運用設定なので、
+    // 展示は複数セッション・複数日にまたがって電源を落とすため PlayerPrefs 経由で
+    // 次回起動時にも引き継ぐ（SettingsStore 参照）。
+    // キーが無い＝一度も Admin 画面から触っていない場合は、Inspector/シーンに
+    // 保存されている値（= このフィールドの現在値）がそのまま使われる。
+    // ※ この設定は CameraCircleMatte（丸窓モード）とは無関係な独立設定。
+    //   以前はドーム有効時に強制OFFにしていたが、「ドーム中でもボーンを見せる」
+    //   方針に変わったため、あちら側の骨格処理は撤去してある
+    private void Awake()
+    {
+        showSkeleton = SettingsStore.GetBool($"{nameof(SkeletonRenderer)}.{nameof(showSkeleton)}", showSkeleton);
+
+        // setter と同じ後処理を通す。Awake 時点では線がまだ1本も無いので実質は空振りだが、
+        // 「フィールドへ直接代入したら必ず後処理を通す」形を崩さないために揃えておく
+        ApplyShowSkeleton();
+    }
 
     // ── イベント購読 ──
     // Unity は「全オブジェクトの Awake → 全オブジェクトの OnEnable」ではなく
@@ -285,8 +303,9 @@ public class SkeletonRenderer : MonoBehaviour
     /// <summary>
     /// 骨格の線を描くか。false にすると既存の線も含めて一切表示しない。
     ///
-    /// 「花火を見せることを優先したい」運用（CameraCircleMatte による丸い映像の演出など）で
-    /// 使う。機能自体は消していないので true に戻せば従来どおり描画される。
+    /// 「花火を見せることを優先したい」運用向けのスイッチで、Admin画面から切り替える。
+    /// 丸窓（ドーム）モードとは独立した設定であり、ドーム中でも true ならボーンは出る。
+    /// 機能自体は消していないので true に戻せば従来どおり描画される。
     ///
     /// コンポーネントの enabled を落とす方式にしなかった理由:
     /// UpdateSkeleton() は PoseLandmarkDetector からの直接呼び出しなので、
@@ -300,14 +319,23 @@ public class SkeletonRenderer : MonoBehaviour
             if (showSkeleton == value) return;
             showSkeleton = value;
 
-            // OFF にした瞬間、既に生成済みの線を隠す
-            // （次の UpdateSkeleton を待たずに即座に消えるようにするため）
-            if (!showSkeleton)
-            {
-                foreach (var personIndex in _personLines.Keys)
-                    SetPersonVisible(personIndex, false);
-            }
+            ApplyShowSkeleton();
+
+            // 展示は複数セッション・複数日にまたがって電源を落とすので、選択を次回起動へ引き継ぐ。
+            // 切り替えは Admin画面のボタン操作時だけなので、毎回 Save() を呼ぶコストは無視できる
+            SettingsStore.SetBool($"{nameof(SkeletonRenderer)}.{nameof(showSkeleton)}", showSkeleton);
         }
+    }
+
+    // showSkeleton を変えた直後に必要な後処理。
+    // OFF にした瞬間、既に生成済みの線を隠す
+    // （次の UpdateSkeleton を待たずに即座に消えるようにするため）
+    private void ApplyShowSkeleton()
+    {
+        if (showSkeleton) return;
+
+        foreach (var personIndex in _personLines.Keys)
+            SetPersonVisible(personIndex, false);
     }
 
     public void UpdateSkeleton(int personIndex, List<NormalizedLandmark> landmarks)

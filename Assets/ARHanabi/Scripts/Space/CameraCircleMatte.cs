@@ -13,18 +13,23 @@ using UnityEngine;
 //   ドーム型をしているので、ドームをその内側に収めれば枠と衝突しない。
 //   baseY = 0.5 かつ domeWidth = domeHeight にすれば元の真円にも戻せる。
 //
-// ── このコンポーネントが4つまとめて面倒を見る理由 ──
-//   見た目を成立させるには次の4つが同時に揃っている必要がある。
+// ── このコンポーネントが3つまとめて面倒を見る理由 ──
+//   見た目を成立させるには次の3つが同時に揃っている必要がある。
 //   どれか1つでも欠けると破綻するので、1箇所に集約して「まとめてON/OFF」できるようにした。
 //     1. カメラを黒クリアにする      … 欠けると青いスカイボックスが露出する
 //     2. 背景 Quad の大きさと位置    … 欠けると人の頭や上げた手がドームから切れる
 //     3. ドーム型の幕を重ねる        … 欠けると縁がはっきり出て「切り抜いた感」が出る
-//     4. 骨格の線を消す              … 花火を見せる運用では邪魔になる
+//
+// ── かつてあった4つ目「骨格の線を消す」を外した理由 ──
+//   当初はドーム化と骨格の非表示をセットにしていたが、
+//   「ドーム中でも認識されている人のボーンは見せたい」という方針に変わった。
+//   骨格の表示ON/OFFはドームとは無関係な独立設定として Admin 画面から切り替える形にし、
+//   その状態は SkeletonRenderer 自身が永続化する。ここは一切関与しない。
 //
 // ── なぜ「実行時に書き換えて実行時に戻す」方式なのか ──
 //   この見せ方は現場で試して戻す可能性がある、という要件だった。
 //   シーンに保存してしまうと戻すのが手作業になるので、
-//   1〜4 はすべて「有効化した瞬間の値を控えて、無効化時に復元する」形にしてある。
+//   1〜3 はすべて「有効化した瞬間の値を控えて、無効化時に復元する」形にしてある。
 //   結果として MainScene.unity には一切の永続的変更が入らない。
 //
 // ── 前提となっている実測値（触るときは必ず読む）──
@@ -72,10 +77,6 @@ public class CameraCircleMatte : MonoBehaviour
              "0.15〜0.25 まで上げる。既定 0 は「見た目を変えない」という意味")]
     [SerializeField, Range(0f, 1f)] private float innerDim = 0f;
 
-    [Header("骨格")]
-    [Tooltip("この演出中は骨格の線を隠す。無効化時には元の状態へ戻す")]
-    [SerializeField] private bool hideSkeleton = true;
-
     // ── 内部 ──
     private Camera        _camera;
     private MeshRenderer  _renderer;
@@ -94,8 +95,6 @@ public class CameraCircleMatte : MonoBehaviour
     private Transform          _bgQuad;
     private Vector3            _origBgQuadScale;
     private Vector3            _origBgQuadPos;
-    private SkeletonRenderer   _skeleton;
-    private bool               _origShowSkeleton;
 
     // 背景 Quad のアスペクトを WebCamTexture から取りたいが、カメラが開くまで来ない。
     // 取れるまで LateUpdate で粘り、取れたら一度だけ確定する
@@ -110,7 +109,8 @@ public class CameraCircleMatte : MonoBehaviour
 
     /// <summary>
     /// 演出のON/OFF。OFF にすると控えておいた元の値（カメラのClearFlags・
-    /// 背景Quadのscale・骨格の表示）をすべて復元し、幕を隠す。
+    /// 背景Quadのscale/position）をすべて復元し、幕を隠す。
+    /// 骨格の表示状態はここでは触らない（SkeletonRenderer.ShowSkeleton の独立設定）。
     /// </summary>
     public bool MatteEnabled
     {
@@ -230,14 +230,11 @@ public class CameraCircleMatte : MonoBehaviour
         // 2. 背景 Quad の大きさ・位置は WebCamTexture のアスペクトが要るので LateUpdate で粘る
         _bgQuadScaleApplied = false;
 
-        // 4. 骨格を隠す
-        if (hideSkeleton && _skeleton != null) _skeleton.ShowSkeleton = false;
-
         // 3. 幕を出す
         if (_renderer != null) _renderer.enabled = true;
 
         _active = true;
-        Debug.Log("[CircleMatte] 有効化しました（カメラを黒クリア・背景Quad縮小・幕・骨格非表示）");
+        Debug.Log("[CircleMatte] 有効化しました（カメラを黒クリア・背景Quad縮小・幕）");
     }
 
     private void Deactivate()
@@ -262,9 +259,6 @@ public class CameraCircleMatte : MonoBehaviour
             _origBgQuadPos   = _bgQuad.position;
         }
 
-        _skeleton = FindFirstObjectByType<SkeletonRenderer>();
-        if (_skeleton != null) _origShowSkeleton = _skeleton.ShowSkeleton;
-
         _captured = true;
     }
 
@@ -283,8 +277,6 @@ public class CameraCircleMatte : MonoBehaviour
             _bgQuad.localScale = _origBgQuadScale;
             _bgQuad.position   = _origBgQuadPos;
         }
-
-        if (_skeleton != null) _skeleton.ShowSkeleton = _origShowSkeleton;
 
         _captured = false;
     }

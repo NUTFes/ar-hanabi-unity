@@ -21,6 +21,14 @@ public class FireworkEntry
     public bool        isConverted;
     public ParticleData particleData;
 
+    // 画像花火の細かさ（n×n の n）。1件ごとに Admin画面から変えられる。
+    // 0 = 未設定で、この場合は FireworkManager.conversionSettings.resolution が使われる。
+    // 変換時に実際に使った値がここへ書き戻されるので、変換後は必ず具体値が入る。
+    //
+    // 永続化しないのは、エントリ自体がメモリ上にしか無く、
+    // 起動のたびにAPIから取り直されるため（保存しても対応先が消えている）
+    public int         resolution;
+
     // ── 将来のAPI連携フィールド（現在未使用）──
     public int    id       = -1;
     public bool   isShareable;

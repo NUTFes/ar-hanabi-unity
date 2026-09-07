@@ -110,6 +110,20 @@ public class FireworkAudioPlayer : MonoBehaviour
     //   共通プールが汚染されない。
     private const string CommonBurstDir = "Sfx/Burst/Common";
 
+    // 打ち上げ音の共通プール専用のフォルダ。理由は CommonBurstDir と全く同じ。
+    //
+    // ── なぜ Sfx/Launch 直下ではなく Common/ に分けたか ──
+    //   Resources.LoadAll は再帰的なので、共通プールを Sfx/Launch から読むと
+    //   宇宙モード用の Sfx/Launch/Space/ の音まで共通プールに入ってしまい、
+    //   宇宙モードがOFFでも通常花火の打ち上げ音に「シュワーッ」が混ざる
+    //   （Launch 配下は通常の笛が1本しか無いので、約半数が宇宙の音で上がっていた）。
+    //   共通プールだけ Common/ に閉じ込めれば、バリアント用のサブフォルダを
+    //   何段増やしても共通プールが汚染されない。
+    //
+    //   なお ResolveLaunchClips が使うバリアント引きは、意図して
+    //   Sfx/Launch/<AudioVariant>/ を見るので LaunchDir のままでよい。
+    private const string CommonLaunchDir = "Sfx/Launch/Common";
+
     // ── Inspector ──
     [Header("打ち上げ音（上昇中に鳴る）")]
     [Tooltip("空でよい。Resources/Sfx/Launch/ から自動で読み込む。\n" +
@@ -215,7 +229,7 @@ public class FireworkAudioPlayer : MonoBehaviour
     // 「フォルダに置くだけ」で音が増える
     private void LoadClips()
     {
-        Merge(_launch,  launchClips,      LaunchDir);
+        Merge(_launch,  launchClips,      CommonLaunchDir);
         Merge(_burst,   burstClips,       CommonBurstDir);
         Merge(_crackle, crackleClips,     CrackleDir);
 

@@ -83,7 +83,12 @@ Assets/ARHanabi/Audio/Sliced.meta
 
 # 配布用に固めたビルド成果物。Build/ と同じ理由で履歴に入れない
 # （実測 74MB あり、ビルドし直せば再生成できる）
-/AR-hanabi-unity-app.zip
+#
+# ファイル名を1つずつ書いていたら、実際に置かれたのが
+# AR-hanbi-unity-app.zip（"hanabi" が "hanbi"）でルールをすり抜け、
+# あやうく 74MB を履歴に入れるところだった。
+# 名前の揺れに依存しないよう、リポジトリ直下の zip はまとめて除外する
+/*.zip
 
 # Cygwin/MSYS のシェルがクラッシュしたときに落ちる残骸。
 # *.stackdump 自体は上で除外済みだが、Assets 配下に落ちると Unity が

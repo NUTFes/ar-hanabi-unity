@@ -61,6 +61,7 @@ public class FireworkManager : MonoBehaviour
     {
         if (Instance != null && Instance != this) { Destroy(gameObject); return; }
         Instance = this;
+
         _converter = new ImageToParticles(conversionSettings);
     }
 
@@ -151,6 +152,50 @@ public class FireworkManager : MonoBehaviour
         RaiseEntriesChanged();
     }
 
+    // ── 画像花火の細かさ（変換解像度）──
+    //
+    // 画像を n×n に縮小してから粒に変換している（ImageToParticles 参照）ので、
+    // この n が「画像花火の細かさ」そのものになる。
+    // 粒のサイズは ImageFireworkEffect が data.width から導出するため、
+    // n を変えても粒が隙間だらけ／団子になることはなく、見た目は自動で追従する。
+    //
+    // 細かさは1件ごとに持つ（FireworkEntry.resolution）。
+    // 絵によって最適な細かさが違う——文字や線画は細かく、面で塗った絵は粗くしたほうが
+    // 花火らしく見える——ので、全体で1つの値を共有する形にはしていない。
+    // 未設定（0）のエントリは下記の既定値で焼く。
+
+    /// <summary>細かさが未設定のエントリを焼くときに使う既定値（Inspector 由来）</summary>
+    public int DefaultResolution => conversionSettings.resolution;
+
+    /// <summary>エントリに実際に使う細かさ。未設定なら既定値。</summary>
+    public int ResolutionOf(FireworkEntry entry)
+        => entry != null && entry.resolution > 0 ? entry.resolution : DefaultResolution;
+
+    /// <summary>
+    /// 1件の細かさを変えて、その場で焼き直す。
+    /// 1枚ぶんの変換（最大でも128×128の縮小＋読み出し）なので同期で十分速い。
+    /// 全件の焼き直しと違ってフレームを跨ぐ必要がない。
+    /// </summary>
+    public void SetEntryResolution(FireworkEntry entry, int resolution)
+    {
+        if (entry == null) return;
+
+        // 極端な値で焼くと粒が1個になったり数万個になったりするので、実用域に丸める
+        resolution = Mathf.Clamp(resolution, 8, 128);
+        if (entry.resolution == resolution) return;
+
+        entry.resolution = resolution;
+
+        // 未変換のまま細かさだけ変えられた場合は、焼くのは変換時でよい
+        if (entry.localTexture == null)
+        {
+            RaiseEntriesChanged();
+            return;
+        }
+
+        ConvertEntry(entry);   // ここで RaiseEntriesChanged される
+    }
+
     // ── 変換 ──
 
     /// <summary>1件変換（Admin画面の「変換」ボタンから）</summary>
@@ -161,9 +206,14 @@ public class FireworkManager : MonoBehaviour
             Debug.LogWarning($"[FWManager] No texture: {entry.displayName}");
             return;
         }
-        entry.particleData = _converter.Convert(entry.localTexture);
+        // 細かさは1件ごと。未設定なら既定値で焼き、実際に使った値を書き戻す
+        // （以後この行は具体値を表示できる＝「既定」という曖昧な状態が残らない）
+        int n = ResolutionOf(entry);
+        entry.resolution = n;
+
+        entry.particleData = _converter.Convert(entry.localTexture, n);
         entry.isConverted  = true;
-        Debug.Log($"[FWManager] Converted {entry.displayName}: {entry.particleData.particles.Length} pts");
+        Debug.Log($"[FWManager] Converted {entry.displayName}: {entry.particleData.particles.Length} pts ({n}x{n})");
         RaiseEntriesChanged();
     }
 
