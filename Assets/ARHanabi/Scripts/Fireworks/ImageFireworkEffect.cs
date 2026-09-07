@@ -113,6 +113,15 @@ public class ImageFireworkEffect : MonoBehaviour
     [Range(0f, 1f)]
     public float flickerDepth     = 0.25f;
 
+    [Header("HDR発光")]
+    [Tooltip("HDR発光の倍率（Custom/ParticleAdditive の _Intensity）。1 で従来どおり。\n" +
+             "粒の色は Color32（上限1.0）でしか渡せないので、1.0 を超える明るさはここで作る。\n" +
+             "型花火（ShellPreset.emissiveIntensity は 1.6〜3.0）より控えめにしてあるのは、\n" +
+             "画像花火の色は投稿写真そのままで、強く持ち上げると\n" +
+             "元絵の色が白へ寄って何の絵か読めなくなるため")]
+    [Range(0.2f, 8f)]
+    public float emissiveIntensity = 1.5f;
+
     [Header("粒数制限")]
     [Tooltip("1発あたりの最大粒数。超えた分は等間隔で間引く")]
     public int maxParticles = 2000;
@@ -333,6 +342,12 @@ public class ImageFireworkEffect : MonoBehaviour
         }
 
         _material = new Material(shader) { name = $"ImageFX_{shader.name}" };
+
+        // フォールバックの ParticleUnlit / ParticleColor にはこのプロパティが無いが、
+        // SetFloat は存在しないプロパティに対して何もしないので分岐は不要
+        _material.SetFloat(Shader.PropertyToID("_Intensity"),
+                           Mathf.Max(0.01f, emissiveIntensity));
+
         Debug.Log($"[ImageFX] Using shader: {shader.name}");
         return true;
     }

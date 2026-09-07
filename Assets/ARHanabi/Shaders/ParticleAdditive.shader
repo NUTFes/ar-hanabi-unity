@@ -17,6 +17,23 @@
 //
 //   ParticleUnlit のほうは SkeletonMaterial（スケルトンの線）が使っており、
 //   線が加算で光ってしまうと困るので、あちらは変更していない。
+//
+// ── HDR発光（_Intensity）を足した理由 ──
+//   ParticleSystem.Particle.startColor は Color32（8bit・上限1.0）なので、
+//   C# 側からどれだけ明るい色を入れても頂点カラーは 1.0 で止まる。
+//   URP のカメラは HDR で、Bloom も threshold 0.4 で入っているのに、
+//   「光の芯が白く飛んで縁がグラデーションになる」という実際の花火の光り方は
+//   1.0 を超えないと出ない（1.0 で全部同じ明るさに張り付いてしまう）。
+//
+//   そこでマテリアル単位の倍率をここで掛けて 1.0 を超えさせる。
+//   粒ごとの明るさの差は頂点カラー（0〜1）で表せるので、
+//   _Intensity は「天井を上げる」役割だけを持つ。
+//   例: _Intensity = 2.0 なら、白 (1,1,1) の芯は 2.0、
+//       菊の星 (1, 0.82, 0.40) は (2.0, 1.64, 0.80) になる。
+//
+//   注意: これが効くのは HDR + トーンマッピングが有効なときだけ。
+//   トーンマッパーが無いと 1.0 で単にクリップして白い板になるので、
+//   MainScene の Global Volume Profile には Tonemapping (Neutral) を入れてある。
 Shader "Custom/ParticleAdditive"
 {
     Properties
@@ -26,6 +43,9 @@ Shader "Custom/ParticleAdditive"
 
         // 中心の明るさの寄り具合。大きいほど縁が急に暗くなり、粒が小さく締まって見える
         _Falloff ("Falloff Power", Range(0.5, 8)) = 2
+
+        // HDR発光の倍率。1 で従来どおり（頂点カラーそのまま＝上限1.0）
+        _Intensity ("Emissive Intensity", Range(0.2, 8)) = 1
     }
     SubShader
     {
@@ -56,6 +76,7 @@ Shader "Custom/ParticleAdditive"
             CBUFFER_START(UnityPerMaterial)
                 float4 _BaseColor;
                 float  _Falloff;
+                float  _Intensity;
             CBUFFER_END
 
             struct Attributes
@@ -98,6 +119,13 @@ Shader "Custom/ParticleAdditive"
                 // 頂点カラー（1粒ごとの色）× ティント。
                 // 加算合成なので、アルファにフォールオフを掛ければ縁が自然に消える
                 half4 c = half4(IN.color * _BaseColor);
+
+                // HDR発光。rgb だけに掛ける（アルファに掛けると縁のフォールオフが
+                // 潰れて粒が四角く見えてしまう）。
+                // 加算合成 Blend SrcAlpha One の寄与は rgb*a なので、
+                // rgb を 1.0 超にすれば芯が飛んで Bloom が食いつく
+                c.rgb *= _Intensity;
+
                 c.a *= fall;
                 return c;
             }

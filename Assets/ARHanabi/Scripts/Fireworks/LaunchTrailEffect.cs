@@ -40,6 +40,13 @@ public class LaunchTrailEffect : MonoBehaviour
     public Color headColor  = new Color(1f, 0.92f, 0.62f);
     public Color sparkColor = new Color(1f, 0.62f, 0.22f);
 
+    [Tooltip("HDR発光の倍率（Custom/ParticleAdditive の _Intensity）。1 で従来どおり。\n" +
+             "粒の色は Color32（上限1.0）でしか渡せないので、\n" +
+             "1.0 を超える明るさはここで作る。\n" +
+             "型花火（ShellPreset.emissiveIntensity は 1.6〜3.0）より控えめにしてあるのは、\n" +
+             "昇りが開花より明るいと主役が入れ替わって見えてしまうため")]
+    [Range(0.2f, 8f)] public float emissiveIntensity = 1.5f;
+
     [Header("シェーダー設定")]
     [SerializeField] private Shader particleShader;
 
@@ -197,6 +204,11 @@ public class LaunchTrailEffect : MonoBehaviour
         }
 
         _material = new Material(shader) { name = $"LaunchTrail_{shader.name}" };
+
+        // フォールバックの ParticleUnlit にはこのプロパティが無いが、
+        // SetFloat は存在しないプロパティに対して何もしないので分岐は不要
+        _material.SetFloat(Shader.PropertyToID("_Intensity"),
+                           Mathf.Max(0.01f, emissiveIntensity));
         return true;
     }
 
