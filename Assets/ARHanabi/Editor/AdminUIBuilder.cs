@@ -87,6 +87,12 @@ public static class AdminUIBuilder
     private const float TuneCellWidth    = 600f;
     private const float TuneGridSpacing  = 12f;
 
+    // 「花火の型」タブのグリッド。型名は短い（菊 / 型物・ハート / UFO円盤）ので
+    // 検出の調整タブより細かく割る。TuneCellWidth と同じ考え方で
+    // 1872 に 6列 + 列間 12*5 を収める（300*6 + 60 = 1860）
+    private const int   ShellColumns    = 6;
+    private const float ShellCellWidth  = 300f;
+
     // ── タブ行（TabBar）に並べるタブボタン ──
     // 表示するページは AdminUIManager が SetActive で切り替える。Builder は器だけ作る
     private static readonly string[] TabBarButtonOrder =
@@ -94,6 +100,7 @@ public static class AdminUIBuilder
         "TabBasicButton",
         "TabSpaceButton",
         "TabTuneButton",
+        "TabShellButton",
     };
 
     // 「基本」タブ（横1行）。当日いちばん触るものだけを置く。
@@ -152,7 +159,7 @@ public static class AdminUIBuilder
         new SliderSpec("HandUp",     "手上げ判定のきびしさ  0.15（肩幅比）", 0.05f,   2.50f, false),
         new SliderSpec("Jump",       "ジャンプ判定のきびしさ  0.06（肩幅比）", 0.02f, 2.00f, false),
         new SliderSpec("Cooldown",   "連発防止の間隔  2.0秒",              0.00f,   3.00f, false),
-        new SliderSpec("Hold",       "ポーズの保持時間  0.5秒",            0.10f,   1.50f, false),
+        new SliderSpec("Hold",       "ポーズの保持時間  0.35秒",           0.10f,   1.50f, false),
         // 画像花火の割合だけは 0–100 の百分率（既存の ImageFireworkChance の扱いに合わせる）
         new SliderSpec("ImgChance",  "画像花火の割合  50%",                0f,    100f,  true),
         new SliderSpec("PersonConf", "人物検出のきびしさ  0.50",            0.30f,   0.90f, false),
@@ -195,6 +202,7 @@ public static class AdminUIBuilder
         { "TabBasicButton",     "基本" },
         { "TabSpaceButton",     "宇宙モード" },
         { "TabTuneButton",      "検出の調整" },
+        { "TabShellButton",     "花火の型" },
         { "QuitButton",         "終了" },
         { "CloseButton",        "閉じる" },
         { "OpenTabButton",      "開く" },
@@ -541,14 +549,17 @@ public static class AdminUIBuilder
         var basicPage = FindOrCreateChild(tabContent, "TabBasicPage", log);
         var spacePage = FindOrCreateChild(tabContent, "TabSpacePage", log);
         var tunePage  = FindOrCreateChild(tabContent, "TabTunePage",  log);
+        var shellPage = FindOrCreateChild(tabContent, "TabShellPage", log);
 
         basicPage.SetSiblingIndex(0);
         spacePage.SetSiblingIndex(1);
         tunePage .SetSiblingIndex(2);
+        shellPage.SetSiblingIndex(3);
 
         BuildButtonRow(panel, basicPage, TabBasicButtonOrder, log);
         BuildButtonRow(panel, spacePage, TabSpaceButtonOrder, log);
         BuildTunePage(tunePage, log);
+        BuildShellPage(shellPage, log);
 
         // Editor で開いたときに何も見えないと壊れて見えるので、
         // 既定で「基本」タブを開いた状態にしておく。
@@ -556,6 +567,43 @@ public static class AdminUIBuilder
         SetActive(basicPage, true);
         SetActive(spacePage, false);
         SetActive(tunePage,  false);
+        SetActive(shellPage, false);
+    }
+
+    // 「花火の型」ページ。器（グリッド）だけを作る。
+    //
+    // ── なぜ中身を Builder で作らないか ──
+    //   並べるボタンは花火の型そのもので、その一覧は実行時に
+    //   FireworkLauncher.GetShellPresets()（Asset → Inspector配列 → 既定 の順で解決）
+    //   から取る。Builder は Editor でシーンを組む時点しか動かないので、
+    //   Asset を差し替えたら中身が古くなる。
+    //   一覧が動的なものは Manager が実行時に組む、という
+    //   EntryScrollView > Content（花火の一覧）と同じ方針にしてある。
+    //
+    //   高さも同じ理由で Manager が件数から計算し直す。ここで入れる値は
+    //   Editor で開いたときにページが潰れて見えないための仮値。
+    private static void BuildShellPage(Transform page, StringBuilder log)
+    {
+        // 他のページから流用されたときに競合するので落とす
+        var strayLayout = page.GetComponent<HorizontalLayoutGroup>();
+        if (strayLayout != null) Undo.DestroyObjectImmediate(strayLayout);
+
+        var grid = GetOrAdd<GridLayoutGroup>(page.gameObject);
+        grid.padding         = new RectOffset(0, 0, 0, 0);
+        grid.cellSize        = new Vector2(ShellCellWidth, AdminUiStyle.RowButtonHeight);
+        grid.spacing         = new Vector2(TuneGridSpacing, TuneGridSpacing);
+        grid.startCorner     = GridLayoutGroup.Corner.UpperLeft;
+        grid.startAxis       = GridLayoutGroup.Axis.Horizontal;
+        grid.childAlignment  = TextAnchor.UpperLeft;
+        grid.constraint      = GridLayoutGroup.Constraint.FixedColumnCount;
+        grid.constraintCount = ShellColumns;
+
+        // 既定16種が収まる3行ぶんを仮に確保しておく（実行時に Manager が再計算する）
+        const int assumedRows = 3;
+        SetHeight(page, AdminUiStyle.RowButtonHeight * assumedRows
+                        + TuneGridSpacing * (assumedRows - 1));
+
+        log.AppendLine($"  TabShellPage の器を用意（{ShellColumns}列。中身は実行時に生成）");
     }
 
     // 「基本」「宇宙モード」ページのボタン1行。
@@ -879,12 +927,14 @@ public static class AdminUIBuilder
         AssignButton(so, panel, "TabBasicButton", "tabBasicButton", "tabBasicText", log);
         AssignButton(so, panel, "TabSpaceButton", "tabSpaceButton", "tabSpaceText", log);
         AssignButton(so, panel, "TabTuneButton",  "tabTuneButton",  "tabTuneText",  log);
+        AssignButton(so, panel, "TabShellButton", "tabShellButton", "tabShellText", log);
         Assign(so, "entryCountText", FindComponent<TextMeshProUGUI>(panel, "EntryCountText"), log);
 
         // ページそのもの（Manager が SetActive で1つだけ見せる）
         Assign(so, "tabBasicPage", FindDescendant(panel, "TabBasicPage"), log);
         Assign(so, "tabSpacePage", FindDescendant(panel, "TabSpacePage"), log);
         Assign(so, "tabTunePage",  FindDescendant(panel, "TabTunePage"),  log);
+        Assign(so, "tabShellPage", FindDescendant(panel, "TabShellPage"), log);
 
         Assign(so, "tabHelpText", FindComponent<TextMeshProUGUI>(panel, "TabHelpText"), log);
         Assign(so, "statusText",  FindComponent<TextMeshProUGUI>(panel, "StatusText"),  log);
