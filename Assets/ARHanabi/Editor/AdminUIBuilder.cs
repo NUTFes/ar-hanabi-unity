@@ -101,6 +101,7 @@ public static class AdminUIBuilder
         "TabSpaceButton",
         "TabTuneButton",
         "TabShellButton",
+        "TabExperienceButton",
     };
 
     // 「基本」タブ（横1行）。当日いちばん触るものだけを置く。
@@ -115,6 +116,9 @@ public static class AdminUIBuilder
         "ImgEnableButton",
         "MatteButton",
         "SkeletonButton",
+        // 花火をその人の位置から打つか、常に画面中央から打つか（FireworkLauncher の設定）。
+        // 体験タブ（コンボ・アンサンブル）と関係が近いが、Launcher 自身の設定なので基本タブに置く
+        "PersonPosButton",
     };
 
     // 「宇宙モード」タブ（横1行）。
@@ -127,6 +131,17 @@ public static class AdminUIBuilder
         "UfoToggleButton",
         "HanabiModeButton",
         "SfxToggleButton",
+    };
+
+    // 「体験」タブ（横1行）。体験演出（コンボ・アンサンブル）のマスターと個別スイッチ。
+    // 宇宙モードタブと同じ構造（マスター1個＋個別スイッチ、マスターOFF中も個別設定は保持）
+    private static readonly string[] TabExperienceButtonOrder =
+    {
+        "ExpMasterButton",
+        "ComboButton",
+        "ComboNumberButton",
+        "ComboTrailButton",
+        "EnsembleButton",
     };
 
     // 「検出の調整」タブに並べるスライダー。3列×2行のグリッドにこの順で入る。
@@ -156,8 +171,10 @@ public static class AdminUIBuilder
 
     private static readonly SliderSpec[] TuneSliders =
     {
-        new SliderSpec("HandUp",     "手上げ判定のきびしさ  0.15（肩幅比）", 0.05f,   2.50f, false),
-        new SliderSpec("Jump",       "ジャンプ判定のきびしさ  0.06（肩幅比）", 0.02f, 2.00f, false),
+        new SliderSpec("HandUp",     "手上げ判定のきびしさ  0.5（肩幅比）",  0.05f,   2.50f, false),
+        // Key は "Jump" のまま（GameObject名を変えると再構築が要るため、体験タブ追加時にまとめて
+        // "JumpRise" へ差し替える）。中身は既に「ジャンプの高さ」判定に変わっている
+        new SliderSpec("Jump",       "ジャンプの高さ  0.35（肩幅比）",      0.10f,   1.00f, false),
         new SliderSpec("Cooldown",   "連発防止の間隔  2.0秒",              0.00f,   3.00f, false),
         new SliderSpec("Hold",       "ポーズの保持時間  0.35秒",           0.10f,   1.50f, false),
         // 画像花火の割合だけは 0–100 の百分率（既存の ImageFireworkChance の扱いに合わせる）
@@ -190,6 +207,7 @@ public static class AdminUIBuilder
         { "ImgEnableButton",    "画像花火 [ON]" },
         { "MatteButton",        "丸窓モード [OFF]" },
         { "SkeletonButton",     "ボーン表示 [ON]" },
+        { "PersonPosButton",    "人の位置から打つ [OFF]" },
 
         // 宇宙モードタブ
         { "SpaceModeButton",    "宇宙モード [OFF]" },
@@ -198,14 +216,22 @@ public static class AdminUIBuilder
         { "HanabiModeButton",   "花火の種類 [混合]" },
         { "SfxToggleButton",    "宇宙効果音 [ON]" },
 
+        // 体験タブ
+        { "ExpMasterButton",    "体験演出 [OFF]" },
+        { "ComboButton",        "コンボ [ON]" },
+        { "ComboNumberButton",  "コンボの数字 [ON]" },
+        { "ComboTrailButton",   "コンボの光跡 [ON]" },
+        { "EnsembleButton",     "いっしょに [ON]" },
+
         // タブ行・ヘッダー・パネル外
-        { "TabBasicButton",     "基本" },
-        { "TabSpaceButton",     "宇宙モード" },
-        { "TabTuneButton",      "検出の調整" },
-        { "TabShellButton",     "花火の型" },
-        { "QuitButton",         "終了" },
-        { "CloseButton",        "閉じる" },
-        { "OpenTabButton",      "開く" },
+        { "TabBasicButton",      "基本" },
+        { "TabSpaceButton",      "宇宙モード" },
+        { "TabTuneButton",       "検出の調整" },
+        { "TabShellButton",      "花火の型" },
+        { "TabExperienceButton", "体験" },
+        { "QuitButton",          "終了" },
+        { "CloseButton",         "閉じる" },
+        { "OpenTabButton",       "開く" },
     };
 
     // 廃止したボタン。存在すれば削除する（Ctrl+Z 1回で戻せるよう Undo に登録する）。
@@ -546,28 +572,32 @@ public static class AdminUIBuilder
         layout.childForceExpandHeight = false;
         ClearFixedHeight(tabContent);
 
-        var basicPage = FindOrCreateChild(tabContent, "TabBasicPage", log);
-        var spacePage = FindOrCreateChild(tabContent, "TabSpacePage", log);
-        var tunePage  = FindOrCreateChild(tabContent, "TabTunePage",  log);
-        var shellPage = FindOrCreateChild(tabContent, "TabShellPage", log);
+        var basicPage      = FindOrCreateChild(tabContent, "TabBasicPage",      log);
+        var spacePage      = FindOrCreateChild(tabContent, "TabSpacePage",      log);
+        var tunePage       = FindOrCreateChild(tabContent, "TabTunePage",       log);
+        var shellPage      = FindOrCreateChild(tabContent, "TabShellPage",      log);
+        var experiencePage = FindOrCreateChild(tabContent, "TabExperiencePage", log);
 
-        basicPage.SetSiblingIndex(0);
-        spacePage.SetSiblingIndex(1);
-        tunePage .SetSiblingIndex(2);
-        shellPage.SetSiblingIndex(3);
+        basicPage     .SetSiblingIndex(0);
+        spacePage     .SetSiblingIndex(1);
+        tunePage      .SetSiblingIndex(2);
+        shellPage     .SetSiblingIndex(3);
+        experiencePage.SetSiblingIndex(4);
 
-        BuildButtonRow(panel, basicPage, TabBasicButtonOrder, log);
-        BuildButtonRow(panel, spacePage, TabSpaceButtonOrder, log);
+        BuildButtonRow(panel, basicPage,      TabBasicButtonOrder,      log);
+        BuildButtonRow(panel, spacePage,      TabSpaceButtonOrder,      log);
         BuildTunePage(tunePage, log);
         BuildShellPage(shellPage, log);
+        BuildButtonRow(panel, experiencePage, TabExperienceButtonOrder, log);
 
         // Editor で開いたときに何も見えないと壊れて見えるので、
         // 既定で「基本」タブを開いた状態にしておく。
         // 実行中は AdminUIManager が最後に選んだタブを復元する
-        SetActive(basicPage, true);
-        SetActive(spacePage, false);
-        SetActive(tunePage,  false);
-        SetActive(shellPage, false);
+        SetActive(basicPage,      true);
+        SetActive(spacePage,      false);
+        SetActive(tunePage,       false);
+        SetActive(shellPage,      false);
+        SetActive(experiencePage, false);
     }
 
     // 「花火の型」ページ。器（グリッド）だけを作る。
@@ -924,17 +954,19 @@ public static class AdminUIBuilder
         AssignButton(so, panel.parent, "OpenTabButton", "openTabButton", null, log);
 
         // ── タブ行 ──
-        AssignButton(so, panel, "TabBasicButton", "tabBasicButton", "tabBasicText", log);
-        AssignButton(so, panel, "TabSpaceButton", "tabSpaceButton", "tabSpaceText", log);
-        AssignButton(so, panel, "TabTuneButton",  "tabTuneButton",  "tabTuneText",  log);
-        AssignButton(so, panel, "TabShellButton", "tabShellButton", "tabShellText", log);
+        AssignButton(so, panel, "TabBasicButton",      "tabBasicButton",      "tabBasicText",      log);
+        AssignButton(so, panel, "TabSpaceButton",      "tabSpaceButton",      "tabSpaceText",      log);
+        AssignButton(so, panel, "TabTuneButton",       "tabTuneButton",       "tabTuneText",       log);
+        AssignButton(so, panel, "TabShellButton",      "tabShellButton",      "tabShellText",      log);
+        AssignButton(so, panel, "TabExperienceButton", "tabExperienceButton", "tabExperienceText", log);
         Assign(so, "entryCountText", FindComponent<TextMeshProUGUI>(panel, "EntryCountText"), log);
 
         // ページそのもの（Manager が SetActive で1つだけ見せる）
-        Assign(so, "tabBasicPage", FindDescendant(panel, "TabBasicPage"), log);
-        Assign(so, "tabSpacePage", FindDescendant(panel, "TabSpacePage"), log);
-        Assign(so, "tabTunePage",  FindDescendant(panel, "TabTunePage"),  log);
-        Assign(so, "tabShellPage", FindDescendant(panel, "TabShellPage"), log);
+        Assign(so, "tabBasicPage",      FindDescendant(panel, "TabBasicPage"),      log);
+        Assign(so, "tabSpacePage",      FindDescendant(panel, "TabSpacePage"),      log);
+        Assign(so, "tabTunePage",       FindDescendant(panel, "TabTunePage"),       log);
+        Assign(so, "tabShellPage",      FindDescendant(panel, "TabShellPage"),      log);
+        Assign(so, "tabExperiencePage", FindDescendant(panel, "TabExperiencePage"), log);
 
         Assign(so, "tabHelpText", FindComponent<TextMeshProUGUI>(panel, "TabHelpText"), log);
         Assign(so, "statusText",  FindComponent<TextMeshProUGUI>(panel, "StatusText"),  log);
@@ -945,6 +977,7 @@ public static class AdminUIBuilder
         AssignButton(so, panel, "ImgEnableButton",   "imgEnableButton",   "imgEnableText",   log);
         AssignButton(so, panel, "MatteButton",       "matteButton",       "matteText",       log);
         AssignButton(so, panel, "SkeletonButton",    "skeletonButton",    "skeletonText",    log);
+        AssignButton(so, panel, "PersonPosButton",   "personPosButton",   "personPosText",   log);
 
         // ── 宇宙モードタブ ──
         AssignButton(so, panel, "SpaceModeButton",   "spaceModeButton",   "spaceModeText",   log);
@@ -952,6 +985,13 @@ public static class AdminUIBuilder
         AssignButton(so, panel, "UfoToggleButton",   "ufoToggleButton",   "ufoToggleText",   log);
         AssignButton(so, panel, "HanabiModeButton",  "hanabiModeButton",  "hanabiModeText",  log);
         AssignButton(so, panel, "SfxToggleButton",   "sfxToggleButton",   "sfxToggleText",   log);
+
+        // ── 体験タブ ──
+        AssignButton(so, panel, "ExpMasterButton",   "expMasterButton",   "expMasterText",   log);
+        AssignButton(so, panel, "ComboButton",       "comboButton",       "comboText",       log);
+        AssignButton(so, panel, "ComboNumberButton", "comboNumberButton", "comboNumberText", log);
+        AssignButton(so, panel, "ComboTrailButton",  "comboTrailButton",  "comboTrailText",  log);
+        AssignButton(so, panel, "EnsembleButton",    "ensembleButton",    "ensembleText",    log);
 
         // ── 検出の調整タブ ──
         // GameObject 名（HandUpSlider / HandUpLabel）と フィールド名（handUpSlider /

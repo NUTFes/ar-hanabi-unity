@@ -15,15 +15,27 @@ using Mediapipe.Tasks.Components.Containers;
 //   Debug.Log のまま残している。
 //
 // 詳細ログを見たい場合は ArLog.cs 冒頭の手順で AR_VERBOSE_LOG を定義する。
+//
+// ── ジャンプ判定を作り直した理由（体験設計）──
+//   旧実装は「1フレーム前との腰yの差分」（＝瞬間の上昇速度）で判定していた。
+//   これは子どもの自然なジャンプでも簡単に閾値を割り込む一方、しゃがんで
+//   ゆっくり立ち上がる動きとの区別がつかず、シーンの実効値（jumpThreshold=1）では
+//   事実上ジャンプが反応しない状態になっていた。
+//   そこで「直近しばらくの間でいちばん低かった位置（＝立っている高さ）から
+//   どれだけ上がったか」を見る方式に変える。腰yのリングバッファを持ち、
+//   基準（baseline）を「窓内での最大y（＝最も低い位置）」として、
+//   そこからの上昇量で判定する。
+//
+// ── 手上げの閾値も見直した（体験設計）──
+//   handUpThreshold の実効値（シーン保存値 1.0）は「手首が肩より肩幅1つ分上」を
+//   要求しており、腕の短い子どもには物理的に届きにくい。既定を 0.5（肩幅の半分）に緩める。
 
 public class GestureDetector : MonoBehaviour
 {
     [Header("ジェスチャー判定設定")]
-    [Tooltip("手が肩より何割上なら「上げた」と判定するか（肩幅に対する相対値）")]
-    [SerializeField] private float handUpThreshold    = 0.15f;
-
-    [Tooltip("ジャンプ判定の閾値（肩幅に対する相対値。大きいほど誤検知しにくい）")]
-    [SerializeField] private float jumpThreshold      = 0.06f;
+    [Tooltip("手が肩より何割上なら「上げた」と判定するか（肩幅に対する相対値）。\n" +
+             "既定 0.5 は「肩幅の半分」。子どもの短い腕でも真っすぐ伸ばせば届く高さ")]
+    [SerializeField] private float handUpThreshold    = 0.5f;
 
     [Tooltip("同じジェスチャーの連続発火を防ぐ秒数")]
     [SerializeField] private float gestureCooldown    = 2.0f;
@@ -80,6 +92,58 @@ public class GestureDetector : MonoBehaviour
              "0 にすると従来どおり片手・両手が同じ保持時間になる")]
     [SerializeField] private float oneHandExtraHold   = 0.15f;
 
+    [Tooltip("ジャンプの高さ判定（肩幅に対する相対値）。\n" +
+             "直近0.8秒の中でいちばん低かった位置（＝立っている高さ）から\n" +
+             "この割合ぶん腰が上がったらジャンプと判定する。\n" +
+             "\n" +
+             "── 旧 jumpThreshold との違い ──\n" +
+             "旧実装は「1フレーム前との差分」（瞬間の上昇速度）を見ていたが、\n" +
+             "この値は「立っている高さからの絶対的な上昇量」を見る。意味が\n" +
+             "まったく違うため、旧フィールドを流用せず別名にしてある\n" +
+             "（保存済みの古い値が新しい意味で誤読されるのを防ぐため）")]
+    [SerializeField] private float jumpRiseThreshold  = 0.35f;
+
+    // ── ジャンプ判定の内部定数 ──
+    // Admin画面には出さない（現場で個別に触る値ではなく、判定アルゴリズムの
+    // 一部として固定してある）。調整が要るとわかったら Inspector から変える
+
+    // 腰・足首の「直近どれだけ低かったか」を見る窓の長さ。約0.8秒あれば、
+    // 助走やしゃがみ込みを含む1回のジャンプ動作を確実に窓内に収められる
+    private const float JumpBaselineWindowSeconds = 0.8f;
+
+    // 基準（baseline）の計算から直近0.1秒を除外する。除外しないと、
+    // ジャンプの立ち上がり自体がまだ窓の中に残っていて基準を汚し、
+    // 「上がった量」が実際より小さく出てしまう
+    private const float JumpBaselineExcludeRecentSeconds = 0.1f;
+
+    // 「地面付近にいる」とみなす上昇量の比率（閾値に対する割合）。
+    // 立ち上がり時間の計測開始と、発射後の再武装の両方で共通に使う
+    private const float JumpGroundedRiseRatio = 0.3f;
+
+    // 地面付近から閾値を超えるまでの時間がこれより長い場合は「ジャンプ」ではなく
+    // 「ゆっくり立ち上がった」とみなして無視する
+    private const float JumpAscentSecondsMax = 0.25f;
+
+    // 発射後、再び地面付近に戻ってから次のジャンプを受け付けるまでの最短間隔。
+    // これが無いと、着地の瞬間的な跳ね返り（バウンド）を2回目のジャンプとして
+    // 拾ってしまうことがある
+    private const float JumpRearmSeconds = 0.4f;
+
+    // 足首の上昇量が腰の上昇量のこの割合を下回る場合は「しゃがんで立った」と
+    // みなしてジャンプを無視する（足が地面についたまま腰だけ上がる動き）
+    private const float AnkleRiseRatio = 0.5f;
+
+    // 足首のランドマークがこの信頼度を下回るときは、映っていない・隠れている等で
+    // 数値が信用できないとみなし、足首チェックを行わず腰の上昇量だけで判定する
+    private const float AnkleVisibilityThreshold = 0.5f;
+
+    // ── 設定のバージョン ──
+    // handUpThreshold・gestureCooldown は名前を変えずに既定値を変えたため、
+    // 現場PCの保存値がある場合はここで一度だけ消す（SettingsStore.DeleteKey 参照）。
+    // jumpThreshold は新しいキー名（jumpRiseThreshold）に変わっているので
+    // 自然に無効化される（消さなくても実害はないが、掃除のためまとめて消す）
+    private const int RequiredSettingsVersion = 2;
+
     // ── 永続化 ──
     // 会場・客層で毎回変えたくなる値なので、Admin画面（SETTINGS）から調整できる。
     // 展示は複数セッション・複数日にまたがって電源を落とすため、調整した値は
@@ -88,20 +152,34 @@ public class GestureDetector : MonoBehaviour
     // 保存されている値（= このフィールドの現在値）がそのまま使われる
     private void Awake()
     {
-        handUpThreshold  = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(handUpThreshold)}",  handUpThreshold);
-        jumpThreshold    = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(jumpThreshold)}",    jumpThreshold);
-        gestureCooldown  = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(gestureCooldown)}",  gestureCooldown);
-        poseHoldDuration = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(poseHoldDuration)}", poseHoldDuration);
+        if (SettingsStore.GetSettingsVersion() < RequiredSettingsVersion)
+        {
+            // 意味・既定値を変えた設定はここで一度だけ削除する。
+            // 削除後は Inspector/シーンの新しい既定値がそのまま使われる
+            SettingsStore.DeleteKey($"{nameof(GestureDetector)}.{nameof(handUpThreshold)}");
+            SettingsStore.DeleteKey($"{nameof(GestureDetector)}.jumpThreshold"); // 旧フィールド名（掃除用）
+            SettingsStore.DeleteKey($"{nameof(GestureDetector)}.{nameof(gestureCooldown)}");
+            SettingsStore.DeleteKey($"{nameof(GestureDetector)}.{nameof(poseHoldDuration)}");
+            SettingsStore.SetSettingsVersion(RequiredSettingsVersion);
+            Debug.Log($"[Gesture] 設定バージョンを {RequiredSettingsVersion} に更新し、旧保存値を削除しました");
+        }
 
-        // holdGraceDuration は Admin画面に出していない（現場で触る値ではなく、
-        // 検出の取りこぼしを吸収するための内部的な定数に近い）ため永続化しない。
+        handUpThreshold   = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(handUpThreshold)}",   handUpThreshold);
+        jumpRiseThreshold = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(jumpRiseThreshold)}", jumpRiseThreshold);
+        gestureCooldown   = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(gestureCooldown)}",   gestureCooldown);
+        poseHoldDuration  = SettingsStore.GetFloat($"{nameof(GestureDetector)}.{nameof(poseHoldDuration)}",  poseHoldDuration);
+
+        // holdGraceDuration / oneHandExtraHold は Admin画面に出していない
+        //（現場で触る値ではなく、判定アルゴリズムの内部的な定数に近い）ため永続化しない。
         // 調整が必要になったら Inspector から変える
 
         // 保持時間は PlayerPrefs が Inspector/シーンの値より優先されるので、
-        // 「シーンを直したのに変わらない」を切り分けられるよう実効値をログに出す
+        // 「シーンを直したのに変わらない」を切り分けられるよう実効値をログに出す。
+        // ジャンプ・手上げの実効閾値も、現場PCでの意図しない厳しさを切り分けられるよう併記する
         Debug.Log($"[Gesture] 保持時間 両手 {poseHoldDuration:F2}秒 / " +
                   $"片手 {poseHoldDuration + oneHandExtraHold:F2}秒 / " +
                   $"猶予 {holdGraceDuration:F2}秒 / 連発防止 {gestureCooldown:F2}秒");
+        Debug.Log($"[Gesture] 閾値（肩幅比） 手上げ {handUpThreshold:F2} / ジャンプの高さ {jumpRiseThreshold:F2}");
     }
 
     // ── Admin画面（SETTINGS）からの調整用 ──
@@ -113,10 +191,11 @@ public class GestureDetector : MonoBehaviour
         set { handUpThreshold = value; SettingsStore.SetFloat($"{nameof(GestureDetector)}.{nameof(handUpThreshold)}", value); }
     }
 
-    public float JumpThreshold
+    /// <summary>ジャンプの高さ判定（肩幅比）。旧 JumpThreshold の後継（意味が違うので別名）</summary>
+    public float JumpRiseThreshold
     {
-        get => jumpThreshold;
-        set { jumpThreshold = value; SettingsStore.SetFloat($"{nameof(GestureDetector)}.{nameof(jumpThreshold)}", value); }
+        get => jumpRiseThreshold;
+        set { jumpRiseThreshold = value; SettingsStore.SetFloat($"{nameof(GestureDetector)}.{nameof(jumpRiseThreshold)}", value); }
     }
 
     public float GestureCooldown
@@ -134,7 +213,6 @@ public class GestureDetector : MonoBehaviour
     // ── 人ごとの判定状態 ──
     private class PersonState
     {
-        public float prevHipY             = -1f;
         public float lastGestureTime      = -999f;
 
         public float bothHandsUpStartTime = -1f;
@@ -147,6 +225,21 @@ public class GestureDetector : MonoBehaviour
 
         public bool bothHandsFired        = false;
         public bool oneHandFired          = false;
+
+        // ── ジャンプ判定用 ──
+        // 腰・足首の (時刻, y) 履歴。JumpBaselineWindowSeconds を超えて古いものは
+        // 毎フレーム先頭から取り除く（Queue なので O(1)）
+        public readonly Queue<(float time, float y)> hipHistory   = new();
+        public readonly Queue<(float time, float y)> ankleHistory = new();
+
+        // 直近で「地面付近（rise が閾値の JumpGroundedRiseRatio 未満）」にいた時刻。
+        // ここが更新され続けている間は「まだジャンプの立ち上がりが始まっていない」を意味し、
+        // 閾値を超えた瞬間にこの時刻からの経過時間で「素早い動きか」を判定する
+        public float jumpGroundedTime = -1f;
+
+        // 発射済みなら次のジャンプを受け付けない（着地して再武装するまで）
+        public bool  jumpArmed        = true;
+        public float jumpFiredTime    = -999f;
     }
 
     private readonly Dictionary<int, PersonState> _personStates = new();
@@ -169,6 +262,8 @@ public class GestureDetector : MonoBehaviour
         var rightWrist    = landmarks[16];
         var leftHip       = landmarks[23];
         var rightHip      = landmarks[24];
+        var leftAnkle     = landmarks[27];
+        var rightAnkle    = landmarks[28];
 
         var centerX   = (leftHip.x + rightHip.x) / 2f;
         var centerY   = (leftHip.y + rightHip.y) / 2f;
@@ -184,24 +279,56 @@ public class GestureDetector : MonoBehaviour
 
         // 閾値を肩幅に対する相対値で計算
         float dynamicHandUpThreshold = shoulderWidth * handUpThreshold;
-        float dynamicJumpThreshold   = shoulderWidth * jumpThreshold;
+        float dynamicJumpThreshold   = shoulderWidth * jumpRiseThreshold;
 
         // 毎フレーム × 人数分出るので Verbose
         ArLog.Verbose($"[Pose] P{personIndex} shoulderWidth={shoulderWidth:F3} " +
                       $"handUpThreshold={dynamicHandUpThreshold:F3} " +
-                      $"jumpThreshold={dynamicJumpThreshold:F3}");
+                      $"jumpRiseThreshold={dynamicJumpThreshold:F3}");
 
         // ── ジャンプ判定 ──
-        float hipY = (leftHip.y + rightHip.y) / 2f;
-        if (state.prevHipY > 0f && canFire)
+        // 「立っている高さ（直近しばらくでいちばん低かった位置）からどれだけ上がったか」を見る。
+        // 詳しい理由はクラス冒頭のコメントと各定数のコメントを参照
+        float hipY   = (leftHip.y + rightHip.y) / 2f;
+        float ankleY = (leftAnkle.y + rightAnkle.y) / 2f;
+        UpdateHistory(state.hipHistory, now, hipY);
+        // 足首の履歴も毎フレーム積む（ジャンプ判定が走る瞬間だけ積むと、
+        // その瞬間には直近0.1秒しかデータが無く基準を計算できないため）
+        UpdateHistory(state.ankleHistory, now, ankleY);
+
+        if (canFire)
         {
-            float deltaY = state.prevHipY - hipY;
-            if (deltaY > dynamicJumpThreshold)
+            float baseline = ComputeBaseline(state.hipHistory, now);
+            if (baseline >= 0f)
             {
-                FireGesture(personIndex, GestureType.Jump, screenPos, state);
+                float rise = baseline - hipY;
+
+                // 地面付近にいる間は基準時刻を更新し続ける。閾値を超えた瞬間、
+                // この時刻からの経過時間が「立ち上がりの速さ」になる
+                if (rise <= dynamicJumpThreshold * JumpGroundedRiseRatio || state.jumpGroundedTime < 0f)
+                    state.jumpGroundedTime = now;
+
+                bool fastEnough = (now - state.jumpGroundedTime) <= JumpAscentSecondsMax;
+
+                // 毎フレーム出るので Verbose（実機での符号確認・閾値調整用）
+                ArLog.Verbose($"[Pose] P{personIndex} 腰baseline={baseline:F3} hipY={hipY:F3} " +
+                              $"rise={rise:F3} th={dynamicJumpThreshold:F3} fast={fastEnough}");
+
+                if (state.jumpArmed && rise > dynamicJumpThreshold && fastEnough
+                    && PassesAnkleCheck(state, now, leftAnkle, rightAnkle, ankleY, rise))
+                {
+                    FireGesture(personIndex, GestureType.Jump, screenPos, state);
+                    state.jumpArmed     = false;
+                    state.jumpFiredTime = now;
+                }
+                else if (!state.jumpArmed
+                         && rise < dynamicJumpThreshold * JumpGroundedRiseRatio
+                         && (now - state.jumpFiredTime) >= JumpRearmSeconds)
+                {
+                    state.jumpArmed = true;
+                }
             }
         }
-        state.prevHipY = hipY;
 
         // ── 手上げ判定 ──
         float shoulderY   = (leftShoulder.y + rightShoulder.y) / 2f;
@@ -331,6 +458,48 @@ public class GestureDetector : MonoBehaviour
         }
 
         PoseEventBus.Instance?.ReportFeedback(feedback);
+    }
+
+    // ── 履歴の更新 ──
+    // 今回のサンプルを積み、JumpBaselineWindowSeconds を超えて古いものを取り除く。
+    // Queue なので先頭（最古）からの除去が O(1)
+    private static void UpdateHistory(Queue<(float time, float y)> history, float now, float y)
+    {
+        history.Enqueue((now, y));
+        while (history.Count > 0 && now - history.Peek().time > JumpBaselineWindowSeconds)
+            history.Dequeue();
+    }
+
+    // ── 基準（baseline）の計算 ──
+    // 窓内（直近 JumpBaselineWindowSeconds 秒）のうち、直近 JumpBaselineExcludeRecentSeconds 秒を
+    // 除いた範囲でいちばん大きい y（＝いちばん低い位置）を返す。該当データがなければ -1
+    private static float ComputeBaseline(Queue<(float time, float y)> history, float now)
+    {
+        float baseline = -1f;
+        foreach (var (t, y) in history)
+        {
+            if (now - t < JumpBaselineExcludeRecentSeconds) continue;
+            if (y > baseline) baseline = y;
+        }
+        return baseline;
+    }
+
+    // ── 足首チェック ──
+    // 腰は上がっているが足首がほとんど上がっていない（＝しゃがんで立っただけ）を除外する。
+    // 足首の可視性が低ければ判定できないので、その場合は無条件で通す（速度条件のみに委ねる）。
+    // 履歴は毎フレーム（ProcessLandmarks 側で）積んである前提で、ここでは読むだけ
+    private static bool PassesAnkleCheck(
+        PersonState state, float now,
+        NormalizedLandmark leftAnkle, NormalizedLandmark rightAnkle, float ankleY, float hipRise)
+    {
+        float visibility = Mathf.Min(leftAnkle.visibility ?? 1f, rightAnkle.visibility ?? 1f);
+        if (visibility < AnkleVisibilityThreshold) return true;
+
+        float ankleBaseline = ComputeBaseline(state.ankleHistory, now);
+        if (ankleBaseline < 0f) return true; // データ不足時は速度条件のみに委ねる
+
+        float ankleRise = ankleBaseline - ankleY;
+        return ankleRise > hipRise * AnkleRiseRatio;
     }
 
     // ── 保持の解除（猶予つき）──

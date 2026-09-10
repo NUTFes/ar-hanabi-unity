@@ -58,4 +58,26 @@ public static class SettingsStore
         PlayerPrefs.SetInt(Prefix + key, value);
         PlayerPrefs.Save();
     }
+
+    /// <summary>保存済みの値を消す（キーが無ければ何もしない）。既定値へ戻す用途</summary>
+    public static void DeleteKey(string key)
+    {
+        PlayerPrefs.DeleteKey(Prefix + key);
+    }
+
+    // ── 設定のバージョン管理 ──
+    // 「同じキー名のまま意味・既定値だけを変える」と、現場PCに保存済みの
+    // 古い値が新しい既定値より優先されてしまい、変更が一切効かなくなる
+    //（このリポジトリでは意味が変わるパラメータを別名で追加するのが原則だが、
+    //  gestureCooldown のように名前は同じで「安全側の既定値に戻したい」ケースもある）。
+    //
+    // 各コンポーネントの Awake で
+    //   if (SettingsStore.GetSettingsVersion() < N) { 関連キーを DeleteKey; SetSettingsVersion(N); }
+    // という形で使う（GestureDetector.Awake 参照）。バージョンは1つだけの
+    // グローバルなカウンタなので、複数コンポーネントが同時に上げても衝突しない
+    // （それぞれ「自分に関係あるキーだけ」を消すため）。
+    private const string SettingsVersionKey = "SettingsVersion";
+
+    public static int GetSettingsVersion() => GetInt(SettingsVersionKey, 0);
+    public static void SetSettingsVersion(int version) => SetInt(SettingsVersionKey, version);
 }
