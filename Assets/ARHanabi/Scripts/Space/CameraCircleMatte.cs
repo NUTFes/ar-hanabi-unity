@@ -19,6 +19,19 @@ using UnityEngine;
 //     1. カメラを黒クリアにする      … 欠けると青いスカイボックスが露出する
 //     2. 背景 Quad の大きさと位置    … 欠けると人の頭や上げた手がドームから切れる
 //     3. ドーム型の幕を重ねる        … 欠けると縁がはっきり出て「切り抜いた感」が出る
+//                                      （幕のシェーダーがドームの外の空も描く。後述）
+//
+// ── ドームの外を「黒」から「空」に変えた理由 ──
+//   当初は外側を真っ黒にしていた（花火が埋もれないよう暗くするのが目的だったので、
+//   黒であれば要件は満たしていた）。ただ宇宙モードでコックピットの窓から外を覗くと
+//   窓の外に何も無い、という絵になってしまう。そこで外側に空を描き、
+//   宇宙モードのときは宇宙、通常のときは夜空に出し分ける。
+//   絵そのものは CameraCircleMatte.shader が手続きで描く（素材ファイルは不要）。
+//   ここが持つのはモード別のプリセットと、どちらを流し込むかの判断だけ。
+//
+//   ⚠️ 空は必ず加算合成の花火より十分暗く保つこと。空が明るいほど花火が埋もれ、
+//      この演出を入れた元々の目的が消える。既定値は輝度 0.01〜0.06 に収めてある。
+//      現場で花火が負けていると感じたら skyBrightness を下げる（0 で従来の真っ黒）。
 //
 // ── かつてあった4つ目「骨格の線を消す」を外した理由 ──
 //   当初はドーム化と骨格の非表示をセットにしていたが、
@@ -77,6 +90,114 @@ public class CameraCircleMatte : MonoBehaviour
              "0.15〜0.25 まで上げる。既定 0 は「見た目を変えない」という意味")]
     [SerializeField, Range(0f, 1f)] private float innerDim = 0f;
 
+    [Header("ドームの外の空")]
+    [Tooltip("空全体の強さ。0 にすると従来どおりドームの外が真っ黒になる。\n" +
+             "加算合成の花火が空に負けていると感じたらここを下げるのが一番速い")]
+    [SerializeField, Range(0f, 1f)] private float skyBrightness = 1f;
+
+    [Tooltip("通常モードのときの空（夜空）")]
+    [SerializeField] private SkyPreset nightSky = SkyPreset.NightSky();
+
+    [Tooltip("宇宙モード（SpaceModeController.MasterEnabled）のときの空（宇宙）")]
+    [SerializeField] private SkyPreset spaceSky = SkyPreset.Space();
+
+    // ── ドームの外に描く空のプリセット ──
+    //
+    // シェーダー側にキーワードを置いて「宇宙用」「夜空用」で分岐させることもできるが、
+    // それだとシェーダーバリアントが2倍になる上に、「夜空にも星雲を少しだけ乗せたい」
+    // のような中間の詰めができなくなる。値だけを差し替える形にしておけば、
+    // 現場で Inspector を触りながら両モードを独立に追い込める。
+    [System.Serializable]
+    public class SkyPreset
+    {
+        [Tooltip("地平（ドームの底辺）側の色。ここが一番明るくなる")]
+        public Color horizonColor;
+
+        [Tooltip("天頂側の色。花火が上がるのはこの帯なので、ここを暗く保つのが重要")]
+        public Color zenithColor;
+
+        [Tooltip("地平のにじみの色。夜空では町明かりの暖色にする")]
+        public Color glowColor;
+
+        [Tooltip("地平のにじみの強さ。0 で消える（宇宙モードでは 0）")]
+        [Range(0f, 1f)] public float glowStrength;
+
+        [Tooltip("地平のにじみが届く高さ（画面の高さ比）")]
+        [Range(0.02f, 1f)] public float glowHeight;
+
+        [Tooltip("星雲の色。宇宙モードの色味を決める")]
+        public Color nebulaColor;
+
+        [Tooltip("星雲の強さ。0 で消える（夜空では 0）")]
+        [Range(0f, 1f)] public float nebulaStrength;
+
+        [Tooltip("星雲のもやの細かさ。大きいほど細かい雲になる")]
+        [Range(0.5f, 8f)] public float nebulaScale;
+
+        [Tooltip("星の色")]
+        public Color starColor;
+
+        [Tooltip("星を置く格子の細かさ（画面の高さあたりの分割数）。\n" +
+                 "実際の星の数はこれと出現率の掛け算で決まる")]
+        [Range(10f, 300f)] public float starDensity;
+
+        [Tooltip("1マスに星が置かれる確率")]
+        [Range(0f, 1f)] public float starChance;
+
+        [Tooltip("星の明るさ")]
+        [Range(0f, 3f)] public float starBrightness;
+
+        [Tooltip("星の半径（画面の高さ比）。密度を変えても見た目の大きさはここだけで決まる")]
+        [Range(0.0005f, 0.02f)] public float starSize;
+
+        [Tooltip("瞬きの強さ。0 で瞬かない")]
+        [Range(0f, 1f)] public float starTwinkle;
+
+        [Tooltip("星が流れる速さ（画面の高さ／秒）。宇宙モードで『航行中』を出すために少しだけ動かす。\n" +
+                 "夜空は 0（地上から見た星は動かない）")]
+        [Range(0f, 0.05f)] public float starDrift;
+
+        /// <summary>通常モードの夜空。花火大会の空に寄せて、地平際だけ町明かりでにじませる</summary>
+        public static SkyPreset NightSky() => new SkyPreset
+        {
+            horizonColor   = new Color(0.055f, 0.075f, 0.130f),
+            zenithColor    = new Color(0.008f, 0.012f, 0.030f),
+            glowColor      = new Color(0.350f, 0.280f, 0.180f),
+            glowStrength   = 0.10f,
+            glowHeight     = 0.18f,
+            nebulaColor    = new Color(0.300f, 0.160f, 0.550f),
+            nebulaStrength = 0f,       // 夜空に星雲は出さない
+            nebulaScale    = 2.2f,
+            starColor      = new Color(1.000f, 0.970f, 0.900f),
+            starDensity    = 60f,
+            starChance     = 0.13f,
+            starBrightness = 0.55f,    // 街中の空なので星は控えめ
+            starSize       = 0.0028f,
+            starTwinkle    = 0.5f,
+            starDrift      = 0f,
+        };
+
+        /// <summary>宇宙モードの宇宙。地平のにじみを消し、星雲を薄く乗せて星を多く・明るくする</summary>
+        public static SkyPreset Space() => new SkyPreset
+        {
+            horizonColor   = new Color(0.012f, 0.010f, 0.030f),
+            zenithColor    = new Color(0.004f, 0.004f, 0.012f),
+            glowColor      = new Color(0.350f, 0.280f, 0.180f),
+            glowStrength   = 0f,       // 宇宙に地平は無い
+            glowHeight     = 0.18f,
+            nebulaColor    = new Color(0.300f, 0.160f, 0.550f),
+            nebulaStrength = 0.22f,
+            nebulaScale    = 2.2f,
+            starColor      = new Color(1.000f, 0.980f, 0.960f),
+            starDensity    = 110f,
+            starChance     = 0.18f,    // 夜空の倍以上。密度も上げてあるので実数は約4倍
+            starBrightness = 1.0f,
+            starSize       = 0.0032f,
+            starTwinkle    = 0.7f,
+            starDrift      = 0.004f,   // ゆっくり流して「航行中」を出す
+        };
+    }
+
     // ── 内部 ──
     private Camera        _camera;
     private MeshRenderer  _renderer;
@@ -106,6 +227,23 @@ public class CameraCircleMatte : MonoBehaviour
     private static readonly int PropFeather    = Shader.PropertyToID("_Feather");
     private static readonly int PropInnerDim   = Shader.PropertyToID("_InnerDim");
     private static readonly int PropAspect     = Shader.PropertyToID("_Aspect");
+
+    private static readonly int PropSkyBrightness   = Shader.PropertyToID("_SkyBrightness");
+    private static readonly int PropSkyHorizonColor = Shader.PropertyToID("_SkyHorizonColor");
+    private static readonly int PropSkyZenithColor  = Shader.PropertyToID("_SkyZenithColor");
+    private static readonly int PropSkyGlowColor    = Shader.PropertyToID("_SkyGlowColor");
+    private static readonly int PropSkyGlowStrength = Shader.PropertyToID("_SkyGlowStrength");
+    private static readonly int PropSkyGlowHeight   = Shader.PropertyToID("_SkyGlowHeight");
+    private static readonly int PropNebulaColor     = Shader.PropertyToID("_NebulaColor");
+    private static readonly int PropNebulaStrength  = Shader.PropertyToID("_NebulaStrength");
+    private static readonly int PropNebulaScale     = Shader.PropertyToID("_NebulaScale");
+    private static readonly int PropStarColor       = Shader.PropertyToID("_StarColor");
+    private static readonly int PropStarDensity     = Shader.PropertyToID("_StarDensity");
+    private static readonly int PropStarChance      = Shader.PropertyToID("_StarChance");
+    private static readonly int PropStarBrightness  = Shader.PropertyToID("_StarBrightness");
+    private static readonly int PropStarSize        = Shader.PropertyToID("_StarSize");
+    private static readonly int PropStarTwinkle     = Shader.PropertyToID("_StarTwinkle");
+    private static readonly int PropStarDrift       = Shader.PropertyToID("_StarDrift");
 
     /// <summary>
     /// 演出のON/OFF。OFF にすると控えておいた元の値（カメラのClearFlags・
@@ -324,6 +462,49 @@ public class CameraCircleMatte : MonoBehaviour
         _material.SetFloat(PropFeather,    feather);
         _material.SetFloat(PropInnerDim,   innerDim);
         _material.SetFloat(PropAspect,     _camera.aspect);
+
+        ApplySkyPreset(CurrentSkyPreset());
+    }
+
+    // 宇宙モードの実効値で空を出し分ける。
+    //
+    // ── なぜ「毎フレーム読む」のか ──
+    //   宇宙モードは Admin 画面のボタンで本番中に切り替わる。イベントを購読すると
+    //   「SpaceModeController が後から自動生成される」「丸窓モードだけ先に有効化される」
+    //   といった起動順の組み合わせごとに購読漏れを考える必要が出る。
+    //   CockpitFrameOverlay が LateUpdate で FrameEnabled に追従しているのと同じ方針で、
+    //   毎フレーム実効値を読んで流し込む（値の代入だけなので安い）。
+    //
+    // ── 見るのは MasterEnabled（FrameEnabled ではない）──
+    //   窓枠を個別に切っても「宇宙にいる」ことは変わらないので、空は宇宙のままにする。
+    //   コントローラがまだ無い環境（単体テスト等）では夜空を使う。
+    private SkyPreset CurrentSkyPreset()
+    {
+        bool space = SpaceModeController.Instance != null &&
+                     SpaceModeController.Instance.MasterEnabled;
+        return space ? spaceSky : nightSky;
+    }
+
+    private void ApplySkyPreset(SkyPreset sky)
+    {
+        if (sky == null) return;
+
+        _material.SetFloat(PropSkyBrightness,   skyBrightness);
+        _material.SetColor(PropSkyHorizonColor, sky.horizonColor);
+        _material.SetColor(PropSkyZenithColor,  sky.zenithColor);
+        _material.SetColor(PropSkyGlowColor,    sky.glowColor);
+        _material.SetFloat(PropSkyGlowStrength, sky.glowStrength);
+        _material.SetFloat(PropSkyGlowHeight,   sky.glowHeight);
+        _material.SetColor(PropNebulaColor,     sky.nebulaColor);
+        _material.SetFloat(PropNebulaStrength,  sky.nebulaStrength);
+        _material.SetFloat(PropNebulaScale,     sky.nebulaScale);
+        _material.SetColor(PropStarColor,       sky.starColor);
+        _material.SetFloat(PropStarDensity,     sky.starDensity);
+        _material.SetFloat(PropStarChance,      sky.starChance);
+        _material.SetFloat(PropStarBrightness,  sky.starBrightness);
+        _material.SetFloat(PropStarSize,        sky.starSize);
+        _material.SetFloat(PropStarTwinkle,     sky.starTwinkle);
+        _material.SetFloat(PropStarDrift,       sky.starDrift);
     }
 
     // 背景 Quad の大きさと位置を、ドームのパラメータから導出して適用する。
