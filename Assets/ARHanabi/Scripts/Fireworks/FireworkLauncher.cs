@@ -359,12 +359,34 @@ public class FireworkLauncher : MonoBehaviour
         // 宇宙モードの音ON/OFFをここで確認して反映する。
         // このクラスは SpaceModeController の状態をイベントで購読し続けているわけではなく、
         // 「発射の瞬間に確認する」だけの単純なやり方にしている。1ジェスチャーにつき
-        // 数回しか呼ばれないコルーチンなので、都度チェックしても負荷にはならない
+        // 数回しか呼ばれないコルーチンなので、都度チェックしても負荷にはならない。
+        //
+        // ── ドーパミンモードの音もここで一緒に決める ──
+        //   「モードと音を繋ぐのはこの1か所だけ」にしてある。
+        //   FireworkAudioPlayer は DopamineModeController も SpaceModeController も
+        //   知らないまま（フォルダ名を受け取るだけ）でいられるし、逆に
+        //   DopamineModeController は誰にも値を配らない（引かれるだけ）という
+        //   あちらの設計方針も保たれる。両側を知っているのはこのコルーチンだけ。
+        //
+        //   AudioVariant（宇宙）と Override（ドーパミン）は独立した軸なので
+        //   同時にONでも構わない。その場合は FireworkAudioPlayer 側で
+        //   Override が先に引かれて勝つ（＝大当たり音が鳴る）。
+        //   「当たったかどうか」の合図のほうが、会場の世界観より優先されるべきだから
+        bool dopamineAudio = DopamineModeController.Instance != null
+                             && DopamineModeController.Instance.AudioEnabled;
+
         if (FireworkAudioPlayer.Instance != null)
         {
             FireworkAudioPlayer.Instance.AudioVariant =
                 SpaceModeController.Instance != null && SpaceModeController.Instance.SpaceAudioEnabled
                 ? "Space" : "";
+
+            // Sfx/Launch/Dopamine/ と Sfx/Burst/Dopamine/ を引かせる。
+            // OFF のときは必ず "" に戻す。ここで戻さないと、モードを切った直後の
+            // 1発だけ大当たり音が残る（このプロパティは Player 側に残り続けるため）
+            string overrideDir = dopamineAudio ? "Dopamine" : "";
+            FireworkAudioPlayer.Instance.LaunchOverrideDir = overrideDir;
+            FireworkAudioPlayer.Instance.BurstOverrideDir  = overrideDir;
         }
 
         // ── 1. 打ち上げ ──
@@ -388,6 +410,23 @@ public class FireworkLauncher : MonoBehaviour
                              request.comboStage);
 
             yield return new WaitForSeconds(rise);
+        }
+        else if (dopamineAudio)
+        {
+            // ── 先バレ音だけは例外的に必ず鳴らす ──
+            //   useRise が false になる型（skipRisePhase＝上から降ってくる花笠・花雷など）は
+            //   打ち上げ音そのものを省いている。「降ってくる玉に下からの笛は合わない」ためで、
+            //   通常モードではこれが正しい。
+            //
+            //   ところがドーパミンモードでは、打ち上げ音は笛ではなく「先バレ音」＝
+            //   当たりが確定したことを知らせる合図に変わっている。
+            //   合図が型によって鳴ったり鳴らなかったりすると、体験として意味を失う
+            //  （「さっきは鳴ったのに今のは鳴らない＝自分の動きが悪かったのか？」と読まれてしまう）。
+            //   物理的な整合より合図の一貫性を優先する、この演出だけの例外。
+            //
+            //   鳴らす位置は開花位置。上昇フェーズが無い以上「下から」には意味が無く、
+            //   これから花火が出る場所から鳴るほうが定位として素直
+            FireworkAudioPlayer.Instance?.PlayLaunch(burstPos);
         }
 
         // ── 2. 開花 ──
