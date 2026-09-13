@@ -110,6 +110,54 @@ public class CameraBackgroundController : MonoBehaviour
     /// <summary>切替処理の進行中フラグ。UI 側の多重クリック防止に使う</summary>
     public bool IsSwitching => _switching;
 
+    // ── 左右反転（鏡像）──
+    //
+    // ── なぜ所有者がまとめて持つのか ──
+    //   反転は2か所を同時に裏返して初めて成立する。
+    //     1. 表示   … BackgroundRemoval.shader（_FlipX）
+    //     2. 関節座標 … PoseCoordinateUtil.MirrorX
+    //   片方だけだと「映像は鏡像なのに、骨格と花火は元の向き」になり、
+    //   手を上げた側と反対側から花火が上がる。
+    //   別々のスイッチにすると必ず片方だけ切り替わる事故が起きるので、
+    //   カメラ映像の所有者であるここが唯一の入口になる。
+    //
+    // ── 設置してみるまで正解が分からない ──
+    //   来場者が自分を見る展示なので普通は鏡像が自然だが、
+    //   カメラを人に向けるか天井から回すか、ハーフミラー越しかで変わる。
+    //   会場で試して決められるよう Admin 画面から切り替え、
+    //   選択は webcamIndex と同じく次回起動へ引き継ぐ
+    private const string MirrorKey = nameof(CameraBackgroundController) + "." + nameof(mirrorHorizontal);
+
+    [Header("映像の向き")]
+    [Tooltip("カメラ映像を左右反転して鏡像にする。\n" +
+             "表示と関節座標の両方を同時に裏返すので、骨格や花火の位置はズレない")]
+    [SerializeField] private bool mirrorHorizontal = false;
+
+    /// <summary>カメラ映像を左右反転（鏡像）するか。表示と関節座標の両方に効く</summary>
+    public bool MirrorHorizontal
+    {
+        get => mirrorHorizontal;
+        set
+        {
+            mirrorHorizontal = value;
+            SettingsStore.SetBool(MirrorKey, value);
+            ApplyMirror();
+            Debug.Log($"[CameraBG] 左右反転: {(value ? "ON（鏡像）" : "OFF")}");
+        }
+    }
+
+    public void ToggleMirror() => MirrorHorizontal = !mirrorHorizontal;
+
+    // 表示側と関節座標側へ同時に流し込む。
+    // 起動時・切替時・カメラを開き直した直後のいずれからも呼ぶ
+    private void ApplyMirror()
+    {
+        PoseCoordinateUtil.MirrorX = mirrorHorizontal;
+
+        var bgEffect = GetComponent<BackgroundRemovalEffect>();
+        if (bgEffect != null) bgEffect.SetMirrorX(mirrorHorizontal);
+    }
+
     // PlayerPrefs 経由で保存された index を読む。展示は複数セッション・複数日に
     // またがって電源を落とすため、前回 Admin 画面で選んだカメラを覚えておきたい
     private const string WebcamIndexKey = nameof(CameraBackgroundController) + "." + nameof(webcamIndex);
@@ -133,6 +181,12 @@ public class CameraBackgroundController : MonoBehaviour
     {
         _renderer  = GetComponent<Renderer>();
         webcamIndex = SettingsStore.GetInt(WebcamIndexKey, webcamIndex);
+
+        // 前回の選択を復元して、表示側・関節座標側の両方へ入れておく。
+        // カメラを開く前に済ませるのは、BackgroundRemovalEffect が
+        // マテリアルを作るときに現在値を拾えるようにするため
+        mirrorHorizontal = SettingsStore.GetBool(MirrorKey, mirrorHorizontal);
+        ApplyMirror();
 
         // 前回の起動がカメラを開いている途中で終わっている（＝そのデバイスで落ちた）なら、
         // 同じ index を避けて次のデバイスから試す

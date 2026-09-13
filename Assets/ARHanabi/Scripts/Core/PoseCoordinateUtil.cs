@@ -22,12 +22,35 @@ using UnityEngine;
 
 public static class PoseCoordinateUtil
 {
+    // ── 左右反転（鏡像）──
+    //
+    // 映像を鏡像で出すとき、関節座標も同じだけ反転させないと、骨格の線も
+    // 花火の打ち上げ位置も「画面に映っている本人」から左右にズレる。
+    //
+    // ── なぜここに置くのか ──
+    //   関節座標から画面上の位置への変換は、全て下の2つの入口を通る
+    //   （SkeletonRenderer も FireworkLauncher.ResolveCenterU も例外なく）。
+    //   ここで1回反転させれば、利用側は反転の有無を知らなくてよい。
+    //   利用側に配ると「片方だけ直し忘れて骨格と花火がズレる」が必ず起きる。
+    //
+    // ── 反転しても影響を受けないもの ──
+    //   ・GestureDetector の肩幅（|左x − 右x| なので符号に依存しない）
+    //   ・PoseTracker の最近傍マッチ（生の座標系で完結している）
+    //   ・y（上下は反転しない。y の向きの話は上のコメントを参照）
+    //
+    // 表示側（カメラ映像そのもの）の反転は BackgroundRemoval.shader が行う。
+    // 両方を同時に切り替える責任は CameraBackgroundController.MirrorHorizontal が持つ
+    public static bool MirrorX { get; set; }
+
+    /// <summary>左右反転が有効なら u を鏡像にする。無効ならそのまま返す</summary>
+    public static float ApplyMirror(float u) => MirrorX ? 1f - u : u;
+
     // ── 正規化座標 → スクリーン座標 ──
     // distance はカメラからの距離（ScreenToWorldPoint に渡す z 値）
     public static Vector3 ToScreenPoint(float normalizedX, float normalizedY, float distance)
     {
         return new Vector3(
-            Mathf.Clamp01(normalizedX) * Screen.width,
+            ApplyMirror(Mathf.Clamp01(normalizedX)) * Screen.width,
             Mathf.Clamp01(normalizedY) * Screen.height,   // 反転しない（理由は上のコメント）
             distance
         );
@@ -62,7 +85,7 @@ public static class PoseCoordinateUtil
     public static Vector3 LandmarkToQuadPoint(Transform backgroundQuad, float u, float v)
     {
         return backgroundQuad.TransformPoint(
-            new Vector3(Mathf.Clamp01(u) - 0.5f, Mathf.Clamp01(v) - 0.5f, 0f));
+            new Vector3(ApplyMirror(Mathf.Clamp01(u)) - 0.5f, Mathf.Clamp01(v) - 0.5f, 0f));
     }
 
     // ── 関節座標 → 画面上のビューポート位置 ──
@@ -72,8 +95,10 @@ public static class PoseCoordinateUtil
     //（画面全体マッピングへのフォールバック。ToWorldPoint と同じ考え方）
     public static Vector2 LandmarkToViewport(Camera camera, Transform backgroundQuad, float u, float v)
     {
+        // フォールバックでも反転を忘れない。ここだけ素通しにすると、
+        // Quad 未設定の環境で骨格と花火が左右にズレる
         if (camera == null || backgroundQuad == null)
-            return new Vector2(Mathf.Clamp01(u), Mathf.Clamp01(v));
+            return new Vector2(ApplyMirror(Mathf.Clamp01(u)), Mathf.Clamp01(v));
 
         var viewport = camera.WorldToViewportPoint(LandmarkToQuadPoint(backgroundQuad, u, v));
         return new Vector2(viewport.x, viewport.y);

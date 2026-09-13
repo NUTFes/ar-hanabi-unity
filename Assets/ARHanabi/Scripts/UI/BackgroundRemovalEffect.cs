@@ -23,8 +23,27 @@ public class BackgroundRemovalEffect : MonoBehaviour
     private static readonly int PropThreshold    = Shader.PropertyToID("_Threshold");
     private static readonly int PropEdgeSoftness = Shader.PropertyToID("_EdgeSoftness");
     private static readonly int PropSegEnabled   = Shader.PropertyToID("_SegEnabled");
+    private static readonly int PropFlipX        = Shader.PropertyToID("_FlipX");
+
+    // 左右反転（鏡像）の現在値。
+    //
+    // ── ここが状態を持たない理由 ──
+    //   真実は CameraBackgroundController.MirrorHorizontal が持つ（表示と関節座標の
+    //   両方をまとめて切り替える責任があるのはあちら）。ここはマテリアルへ値を
+    //   流し込む窓口でしかない。ただしマテリアルは Start で作り直すので、
+    //   作り直したあとに入れ直せるよう最後に渡された値だけ覚えておく
+    private bool _mirrorX;
 
     public bool IsEnabled => enableSegmentation;
+
+    /// <summary>カメラ映像を左右反転して表示する（鏡像）。
+    /// 関節座標側の反転は呼び出し側（CameraBackgroundController）が行う</summary>
+    public void SetMirrorX(bool value)
+    {
+        _mirrorX = value;
+        if (_segMaterial != null)
+            _segMaterial.SetFloat(PropFlipX, value ? 1f : 0f);
+    }
 
     public void SetEnabled(bool value)
     {
@@ -77,6 +96,9 @@ public class BackgroundRemovalEffect : MonoBehaviour
         _segMaterial.SetFloat(PropThreshold,    threshold);
         _segMaterial.SetFloat(PropEdgeSoftness, edgeSoftness);
         _segMaterial.SetFloat(PropSegEnabled,   0f);
+        // 所有者から先に反転を渡されていた場合に備えて入れ直す
+        //（マテリアルはここで初めて作られるので、それ以前の SetMirrorX は届いていない）
+        _segMaterial.SetFloat(PropFlipX, _mirrorX ? 1f : 0f);
 
         // WebCamTexture がすでにセットされていれば引き継ぐ
         if (_webCamTexture != null)

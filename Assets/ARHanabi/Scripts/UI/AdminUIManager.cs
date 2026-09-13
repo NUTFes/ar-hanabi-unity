@@ -78,8 +78,16 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private Transform entryListContent;   // ScrollView > Viewport > Content
     [SerializeField] private TextMeshProUGUI statusText;
 
+    [Header("検知ログ")]
+    [Tooltip("検知したジェスチャーを積む本文（GestureLogContent の TMP）。\n" +
+             "1行1件で、押せる部品は持たない読み取り専用の表示")]
+    [SerializeField] private TextMeshProUGUI gestureLogText;
+
+    [Tooltip("検知ログのスクロール。新しい行を末尾へ追従させるために要る")]
+    [SerializeField] private ScrollRect      gestureLogScroll;
+
     [Header("タブ")]
-    [Tooltip("4枚のタブ。同時に開くのは1枚だけ。\n" +
+    [Tooltip("6枚のタブ。同時に開くのは1枚だけ。\n" +
              "選択中は濃紺背景＋白文字、非選択は白背景＋濃紺文字（AdminUiStyle）")]
     [SerializeField] private Button           tabBasicButton;
     [SerializeField] private TextMeshProUGUI  tabBasicText;
@@ -146,6 +154,11 @@ public class AdminUIManager : MonoBehaviour
              "OFF: 常に画面中央から打つ（従来の挙動）")]
     [SerializeField] private Button           personPosButton;
     [SerializeField] private TextMeshProUGUI  personPosText;
+    [Tooltip("ON: カメラ映像を左右反転して鏡像にする\n" +
+             "（CameraBackgroundController.MirrorHorizontal）。\n" +
+             "表示と関節座標の両方が同時に裏返るので、骨格や花火の位置はズレない")]
+    [SerializeField] private Button           mirrorButton;
+    [SerializeField] private TextMeshProUGUI  mirrorText;
 
     [Header("検出の調整タブ（スライダー）")]
     [Tooltip("ビルド後にUnity Editorへ触れない前提で、展示中に調整したくなる値を\n" +
@@ -354,6 +367,7 @@ public class AdminUIManager : MonoBehaviour
         matteButton     ?.onClick.AddListener(OnMatteClicked);
         skeletonButton  ?.onClick.AddListener(OnSkeletonClicked);
         personPosButton ?.onClick.AddListener(OnPersonPosClicked);
+        mirrorButton    ?.onClick.AddListener(OnMirrorClicked);
 
         // 人の検出閾値は PoseLandmarkDetector が持つ。GestureDetector と同じく
         // AdminPanel の外にあるのでシーンから自動解決する
@@ -373,6 +387,7 @@ public class AdminUIManager : MonoBehaviour
         UpdateMatteLabel();
         UpdateSkeletonLabel();
         UpdatePersonPosLabel();
+        UpdateMirrorLabel();
 
         // タブは「基本」から始める。ページの SetActive とタブの色をここで揃える
         SwitchTab(AdminTab.Basic);
@@ -423,7 +438,147 @@ public class AdminUIManager : MonoBehaviour
         _manager.OnEntriesChanged += RefreshList;
 
         RefreshList();
+        SubscribeGestureLog();
         SetStatus("[OK] 準備完了（F1キーでこの画面の表示/非表示）");
+    }
+
+    // ── 検知ログ ──
+    //
+    // ── なぜ管理画面に出すのか ──
+    //   ジェスチャーの検知は Debug.Log には出ているが、展示PCでは Console が見えない。
+    //   「手を上げたのに反応しない」「触っていないのに上がる」を現場で切り分けるには、
+    //   検知そのものが見える場所に要る。判定のしきい値を触るタブと同じ画面に
+    //   置いておくと、値を動かしながら結果を確かめられる。
+    //
+    // ── 表示だけで、操作はしない ──
+    //   クリアも一時停止も置いていない。押せる部品を増やすと、
+    //   当日スタッフが「触っていいのか」を毎回迷うため。
+    //   古い行は GestureLogMaxLines で自動的に落ちる。
+
+    // 保持する行数。1件2秒（連発防止）としても200行で6分以上あり、
+    // 「さっき何が起きたか」を遡るには十分。全文を毎回 TMP へ流し込むので、
+    // 増やしすぎると文字列の組み立てが重くなる
+    private const int GestureLogMaxLines = 200;
+
+    private readonly Queue<string> _gestureLogLines = new();
+    private bool _gestureLogSubscribed;
+
+    // 積まれた行がまだ表示へ反映されていない
+    private bool _gestureLogDirty;
+
+    // 文字を入れ替えたので、次のフレームで末尾へ寄せる必要がある
+    private bool _gestureLogScrollPending;
+
+    private void SubscribeGestureLog()
+    {
+        if (_gestureLogSubscribed) return;
+
+        var bus = PoseEventBus.Instance;
+        if (bus == null)
+        {
+            Debug.LogWarning("[AdminUI] PoseEventBus が見つからないため検知ログを表示できません");
+            return;
+        }
+
+        bus.OnGestureDetected += OnGestureLogged;
+        _gestureLogSubscribed  = true;
+
+        // 何も起きていないのか、繋がっていないのかを区別できるようにしておく
+        AppendGestureLog($"<color={AdminUiStyle.StatusOkHex}>― 記録を開始しました ―</color>");
+    }
+
+    private void OnGestureLogged(int trackId, GestureType gesture, Vector2 normalizedPos)
+    {
+        // 実時間で出す。Time.time（起動からの秒数）だと、
+        // 「さっきの来場者のとき」を思い出す手掛かりにならない
+        string time = System.DateTime.Now.ToString("HH:mm:ss");
+
+        AppendGestureLog(
+            $"<color={AdminUiStyle.HelpTextHex}>{time}</color>  P{trackId}  " +
+            $"<color={AdminUiStyle.StatusLaunchHex}>{GestureLabel(gesture)}</color>");
+    }
+
+    private static string GestureLabel(GestureType gesture) => gesture switch
+    {
+        GestureType.BothHandsUp => "両手上げ",
+        GestureType.OneHandUp   => "片手上げ",
+        GestureType.Jump        => "ジャンプ",
+        _                       => gesture.ToString(),
+    };
+
+    // ── 行を積むのはここ、UI を触るのは LateUpdate ──
+    //
+    // ⚠️ この関数はジェスチャー検知のコールバックから呼ばれる。呼び出し元は
+    //    PoseLandmarkDetector.Update() → ProcessLatestResult() で、
+    //    MediaPipe の推論結果（ネイティブ資源を持つオブジェクト）を走査している最中。
+    //    そこで UI を作り直してはいけない。
+    //
+    //    以前はここで直接 TMP へ流し込み、さらに Canvas.ForceUpdateCanvases() で
+    //    キャンバス全体の再構築と TMP のメッシュ生成を同期実行していた。
+    //    検知1回ごとにまとまったアロケーションと任意の UI コードが
+    //    ネイティブ側の走査中に割り込む形になり、行儀が悪い
+    //    （ジェスチャー検知でクラッシュする、という報告の第一容疑者）。
+    //
+    //    行を積むだけにしておけば、この経路は文字列1本の追加で終わる。
+    private void AppendGestureLog(string line)
+    {
+        _gestureLogLines.Enqueue(line);
+        while (_gestureLogLines.Count > GestureLogMaxLines)
+            _gestureLogLines.Dequeue();
+
+        _gestureLogDirty = true;
+    }
+
+    // 積まれた行を実際に表示へ反映する。UI を触るのはこのフレーム境界だけ。
+    // 検知は連発防止で最短2秒に1回なので、まとめて作り直しても十分間に合う
+    private void FlushGestureLog()
+    {
+        if (!_gestureLogDirty) return;
+        _gestureLogDirty = false;
+
+        if (gestureLogText == null) return;
+
+        // ── 末尾への追従は「既に末尾を見ているとき」だけ ──
+        //   常に一番下へ飛ばすと、遡って読んでいる最中に次の検知が来た瞬間に
+        //   引き戻されて読めない。上へスクロールしている間はその位置を維持する。
+        //   中身がまだ画面に収まっている（スクロールできない）ときは、
+        //   verticalNormalizedPosition が当てにならないので常に追従扱いにする
+        bool followTail = true;
+        if (gestureLogScroll != null)
+        {
+            var content  = gestureLogScroll.content;
+            var viewport = gestureLogScroll.viewport;
+            bool scrollable = content != null && viewport != null &&
+                              content.rect.height > viewport.rect.height + 1f;
+            followTail = !scrollable || gestureLogScroll.verticalNormalizedPosition <= 0.05f;
+        }
+
+        gestureLogText.text = string.Join("\n", _gestureLogLines);
+
+        if (!followTail || gestureLogScroll == null) return;
+
+        // ContentSizeFitter が新しい高さを出すのは次のレイアウト更新なので、
+        // 位置決めもそこまで遅らせる。ここで即座に合わせると
+        // 1行前の高さを基準にしてしまい、末尾が半分隠れる
+        _gestureLogScrollPending = true;
+    }
+
+    private void LateUpdate()
+    {
+        // ── 順序が逆だと1フレーム待つ意味が無くなる ──
+        //   位置合わせを先に済ませる。ここで処理するのは「前のフレームで
+        //   文字を入れ替えたぶん」で、その後のレイアウト更新で
+        //   ContentSizeFitter が新しい高さを出し終えている。
+        //   Flush の直後に位置合わせをすると、結局1行前の高さを基準にしてしまう。
+        //   Canvas.ForceUpdateCanvases() を使わないのは、検知の最中に
+        //   キャンバス全体の再構築を割り込ませないため（AppendGestureLog のコメント参照）
+        if (_gestureLogScrollPending && gestureLogScroll != null)
+        {
+            _gestureLogScrollPending = false;
+            gestureLogScroll.verticalNormalizedPosition = 0f;
+        }
+
+        FlushGestureLog();
     }
 
     private void Update()
@@ -569,7 +724,10 @@ public class AdminUIManager : MonoBehaviour
             // この通知を上書きすることはもう無い（以前は読む前に消えていた）
             if (err != null)        SetStatus($"[ERROR] {err}");
             else if (added == 0)    SetStatus("[OK] 新しい花火はありませんでした");
-            else                    SetStatus($"[OK] 新しい花火を{added}件取得しました");
+            // 取得した花火は停止中で入る（FireworkManager 側のコメント参照）。
+            // 「取得したのに上がらない」と誤解されないよう、出し方をここで書いておく
+            else                    SetStatus($"[OK] 新しい花火を{added}件取得しました" +
+                                              "（停止中で入ります。一覧の［停止中］を押すと出るようになります）");
         }));
     }
 
@@ -1123,6 +1281,25 @@ public class AdminUIManager : MonoBehaviour
     private void UpdatePersonPosLabel() =>
         ApplyToggleVisual(personPosButton, personPosText, "人の位置から打つ",
                           _launcher != null && !_launcher.LaunchAtScreenCenter);
+
+    // カメラ映像を鏡像にするか。
+    // 表示と関節座標の両方を裏返すのは CameraBackgroundController の責任なので、
+    // ここは所有者のプロパティを叩くだけにしてある（片方だけ切り替える経路を作らない）
+    private void OnMirrorClicked()
+    {
+        if (cameraBackground == null)
+        {
+            SetStatus("[WARN] CameraBackgroundController が見つかりません");
+            return;
+        }
+
+        cameraBackground.ToggleMirror();
+        UpdateMirrorLabel();
+    }
+
+    private void UpdateMirrorLabel() =>
+        ApplyToggleVisual(mirrorButton, mirrorText, "映像の左右反転",
+                          cameraBackground != null && cameraBackground.MirrorHorizontal);
 
     // ── タブ ──
     //

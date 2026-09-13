@@ -74,6 +74,18 @@ public static class AdminUIBuilder
     private const float StatusFontSize   = 24f;   // 2行に収めるため旧 28 から少し下げた
     private const float HelpFontSize     = 20f;
 
+    // ── 下段（画像花火の一覧 ＋ 検知ログ）──
+    // 一覧が残りの幅を全部使い、ログはこの幅で固定する。
+    // 「12:34:56  P0  両手上げ」が折り返さずに収まる幅を実測で取った。
+    // 一覧側は行の中に画像名とボタンが3つ並ぶので、広い方を一覧に残す
+    private const float GestureLogWidth     = 520f;
+    private const float GestureLogFontSize  = 20f;
+
+    // 下段の見出し行の高さと、見出し行〜中身の行のすき間。
+    // 見出しは左右の列で共通の1行なので、寸法もここで1つだけ持つ
+    private const float BottomTitleHeight   = 32f;
+    private const float BottomTitleGap      = 4f;
+
     // スライダーブロックの内訳。
     // 32 + 4(spacing) + 40 + 4(padding) = 80 で AdminUiStyle.SliderBlockH(88) に収まる
     private const float SliderLabelH     = 32f;   // 「手上げ判定のきびしさ 0.15（肩幅比）」の行
@@ -88,8 +100,9 @@ public static class AdminUIBuilder
     private const float TuneGridSpacing  = 12f;
 
     // 「花火の型」タブのグリッド。型名は短い（菊 / 型物・ハート / UFO円盤）ので
-    // 検出の調整タブより細かく割る。TuneCellWidth と同じ考え方で
-    // 1872 に 6列 + 列間 12*5 を収める（300*6 + 60 = 1860）
+    // 検出の調整タブより細かく割る。SliderCellWidth() と同じ考え方で
+    // PageContentWidth(1860) に 6列 + 列間 12*5 を収める（300*6 + 60 = 1860）。
+    // ボタンはスライダーと違い幅がラベル依存なので、こちらは実寸のまま持つ
     private const int   ShellColumns    = 6;
     private const float ShellCellWidth  = 300f;
 
@@ -119,6 +132,9 @@ public static class AdminUIBuilder
         // 花火をその人の位置から打つか、常に画面中央から打つか（FireworkLauncher の設定）。
         // 体験タブ（コンボ・アンサンブル）と関係が近いが、Launcher 自身の設定なので基本タブに置く
         "PersonPosButton",
+        // カメラ映像を鏡像にするか。設置（カメラの向き・ハーフミラーの有無）で
+        // 正解が変わるので、現地で切り替えられるよう基本タブに置く
+        "MirrorButton",
     };
 
     // 「宇宙モード」タブ（横1行）。
@@ -208,6 +224,7 @@ public static class AdminUIBuilder
         { "MatteButton",        "丸窓モード [OFF]" },
         { "SkeletonButton",     "ボーン表示 [ON]" },
         { "PersonPosButton",    "人の位置から打つ [OFF]" },
+        { "MirrorButton",       "映像の左右反転 [OFF]" },
 
         // 宇宙モードタブ
         { "SpaceModeButton",    "宇宙モード [OFF]" },
@@ -265,6 +282,9 @@ public static class AdminUIBuilder
         "Toolbar",
         "SpaceToolbar",
         "SettingsToolbar",
+        // 検知ログの列を［見出し＋スクロール］の縦積みで包んでいた器。
+        // 見出しを下段共通の見出し行へ出したので、中身が空になれば消える
+        "GestureLogView",
     };
 
     // ── メニュー: 再構築 ──
@@ -315,23 +335,24 @@ public static class AdminUIBuilder
         var header     = EnsureSection(panel, "Header",     log);
         var tabBar     = EnsureSection(panel, "TabBar",     log);
         var tabContent = EnsureSection(panel, "TabContent", log);
-        var help       = FindOrCreateChild(panel, "TabHelpText",     log);
-        var status     = FindOrCreateChild(panel, "StatusText",      log);
-        var scroll     = FindOrCreateChild(panel, "EntryScrollView", log);
+        var help       = FindOrCreateChild(panel, "TabHelpText", log);
+        var status     = FindOrCreateChild(panel, "StatusText",  log);
+        // 下段は「画像花火の一覧」と「検知ログ」の横並び。器だけここで用意する
+        var bottomRow  = EnsureSection(panel, "BottomRow", log);
 
         header    .SetSiblingIndex(0);
         tabBar    .SetSiblingIndex(1);
         tabContent.SetSiblingIndex(2);
         help      .SetSiblingIndex(3);
         status    .SetSiblingIndex(4);
-        scroll    .SetSiblingIndex(5);
+        bottomRow .SetSiblingIndex(5);
 
         BuildHeader(panel, header, log);
         BuildTabBar(panel, tabBar, log);
         BuildTabContent(panel, tabContent, log);
         BuildHelp(help, log);
         BuildStatus(status, log);
-        BuildScrollView(scroll, log);
+        BuildBottomRow(panel, bottomRow, log);
 
         // 旧セクション（Toolbar / SpaceToolbar / SettingsToolbar）の後始末。
         // 上の Build* で中身が新しいページへ移った後でないと、
@@ -523,6 +544,14 @@ public static class AdminUIBuilder
 
         SetHeight(tabBar, AdminUiStyle.TabBarHeight);
 
+        // ── タブが6枚になっても件数表示が潰れないこと ──
+        //   タブは flexible: false ＋ preferredWidth 未設定なので、幅は
+        //   max(ToolbarBtnMinW=160, ラベルの preferredWidth) で決まる。
+        //   いちばん長い「検出の調整」でも 5文字 × 32pt + 左右padding 16 ≒ 176px。
+        //   6枚すべてを 176px と見積もっても 176*6 + 列間 12*6 = 1128px で、
+        //   パネル有効幅 1872px に対し 744px が件数表示に残る。
+        //   「全12件 / 有効8件」は 20pt で 300px 程度なので、2倍以上の余裕がある。
+        //   ⚠️ タブを7枚以上に増やすときは、この見積もりを計算し直すこと
         for (int i = 0; i < TabBarButtonOrder.Length; i++)
         {
             var btn = FindOrCreateButton(panel, tabBar, TabBarButtonOrder[i], log);
@@ -583,6 +612,7 @@ public static class AdminUIBuilder
         tunePage      .SetSiblingIndex(2);
         shellPage     .SetSiblingIndex(3);
         experiencePage.SetSiblingIndex(4);
+        dopaminePage  .SetSiblingIndex(5);
 
         BuildButtonRow(panel, basicPage,      TabBasicButtonOrder,      log);
         BuildButtonRow(panel, spacePage,      TabSpaceButtonOrder,      log);
@@ -598,6 +628,7 @@ public static class AdminUIBuilder
         SetActive(tunePage,       false);
         SetActive(shellPage,      false);
         SetActive(experiencePage, false);
+        SetActive(dopaminePage,   false);
     }
 
     // 「花火の型」ページ。器（グリッド）だけを作る。
@@ -665,7 +696,11 @@ public static class AdminUIBuilder
         log.AppendLine($"  {page.name} に {page.childCount} 個のボタンを配置");
     }
 
-    // 「検出の調整」ページ。スライダー6ブロックを3列×2行に並べる。
+    // 「検出の調整」ページ。スライダーを3列のグリッドに並べる。
+    private static void BuildTunePage(Transform page, StringBuilder log) =>
+        BuildSliderGridPage(page, TuneSliders, TuneColumns, log);
+
+    // スライダーを格子に並べる器。
     //
     // HorizontalLayoutGroup を2つ入れ子にするのではなく GridLayoutGroup にしたのは、
     // ブロックの幅を全部同じにしたいため（数値がタブの中で縦に揃って読める）。
@@ -678,25 +713,25 @@ public static class AdminUIBuilder
 
         var grid = GetOrAdd<GridLayoutGroup>(page.gameObject);
         grid.padding          = new RectOffset(0, 0, 0, 0);
-        grid.cellSize         = new Vector2(TuneCellWidth, AdminUiStyle.SliderBlockH);
+        grid.cellSize         = new Vector2(SliderCellWidth(columns), AdminUiStyle.SliderBlockH);
         grid.spacing          = new Vector2(TuneGridSpacing, TuneGridSpacing);
         grid.startCorner      = GridLayoutGroup.Corner.UpperLeft;
         grid.startAxis        = GridLayoutGroup.Axis.Horizontal;
         grid.childAlignment   = TextAnchor.UpperCenter;
         grid.constraint       = GridLayoutGroup.Constraint.FixedColumnCount;
-        grid.constraintCount  = 3;
+        grid.constraintCount  = columns;
 
         // GridLayoutGroup は行数から preferredHeight を出せるが、
-        // 親（TabContent）が高さを聞きに来るタイミングで確実に値が要るので明示する。
+        // 親が高さを聞きに来るタイミングで確実に値が要るので明示する。
         //
-        // 行数は TuneSliders の本数から出す。以前は「2行ぶん」を直書きしていたので、
+        // 行数は specs の本数から出す。以前は「2行ぶん」を直書きしていたので、
         // スライダーを1本足しただけで3行目がページの外へはみ出して見えなくなっていた
         // （足した本人が高さの直書きに気づけない、という壊れ方をする）
-        int rows = Mathf.CeilToInt(TuneSliders.Length / (float)grid.constraintCount);
+        int rows = Mathf.CeilToInt(specs.Length / (float)columns);
         SetHeight(page, AdminUiStyle.SliderBlockH * rows + TuneGridSpacing * (rows - 1));
 
-        for (int i = 0; i < TuneSliders.Length; i++)
-            BuildSliderBlock(page, TuneSliders[i], i, log);
+        for (int i = 0; i < specs.Length; i++)
+            BuildSliderBlock(page, specs[i], i, log);
 
         log.AppendLine($"  TabTunePage に {TuneSliders.Length} 個のスライダーを配置");
     }
@@ -831,6 +866,274 @@ public static class AdminUIBuilder
         log.AppendLine("  StatusText を整列（2行）");
     }
 
+    // ── 下段（画像花火の一覧 ＋ 検知ログ）──
+    //
+    // ── なぜ横並びの器を1段挟むのか ──
+    //   AdminPanel は VerticalLayoutGroup なので、直下に置いたものは必ず縦に積まれる。
+    //   一覧の右にログを並べたければ、横に並べる器をここで1段だけ挟むしかない。
+    //
+    // ── EntryScrollView は「引っ越す」──
+    //   以前は AdminPanel の直下にあった。名前で探して Reparent するだけなので、
+    //   Inspector のアサイン（entryListContent）も既存の子（Viewport / Content /
+    //   Scrollbar）もそのまま生き残る。作り直さないことが冪等性の条件でもある
+    private static void BuildBottomRow(Transform panel, Transform bottomRow, StringBuilder log)
+    {
+        // 縦幅の主張はこの器が持ち、中身の行が残りを全部使う。
+        // 以前は EntryScrollView 自身が「残りの縦幅を全部使う」役だった
+        Flexible(bottomRow, flexibleHeight: 1f);
+        var rowLe = GetOrAdd<LayoutElement>(bottomRow.gameObject);
+        rowLe.minHeight = 200f;
+
+        // ── 見出しは列の中ではなく、左右で共通の1行に置く ──
+        //   最初はログ列だけを［見出し＋スクロール］の縦積みにしていた。
+        //   一覧列には見出しが無いので、見出しの高さぶんログ側だけが押し下げられ、
+        //   2つのスクロールの上端が揃わなかった。
+        //   見出しを列から出して独立した行にすると、見出しの有無や文字の高さに関係なく
+        //   中身の上端が必ず揃う。列を増やすときも同じ形のまま足せる。
+        //
+        //   ⚠️ 揃うのは「見出しの行と中身の行が同じ列割りである」ことが前提。
+        //      列割り（すき間・幅の配分）は ConfigureColumnRow が両方へ同じ値を入れる。
+        //      片方だけ手で変えると静かにズレるので、必ずあの1か所を通すこと
+        var strayHorizontal = bottomRow.GetComponent<HorizontalLayoutGroup>();
+        if (strayHorizontal != null)
+        {
+            // 以前この器は横並びだった（列を直接ぶら下げていた）。
+            // 縦横2つの LayoutGroup が同居すると互いに子のアンカーを奪い合って崩れる
+            Undo.DestroyObjectImmediate(strayHorizontal);
+            log.AppendLine("  [FIX] BottomRow の HorizontalLayoutGroup を削除（見出し行と中身の行の2段に変更）");
+        }
+
+        var rowLayout = GetOrAdd<VerticalLayoutGroup>(bottomRow.gameObject);
+        rowLayout.padding                = new RectOffset(0, 0, 0, 0);
+        rowLayout.spacing                = BottomTitleGap;
+        rowLayout.childAlignment         = TextAnchor.UpperLeft;
+        rowLayout.childControlWidth      = true;
+        rowLayout.childControlHeight     = true;
+        rowLayout.childForceExpandWidth  = true;
+        rowLayout.childForceExpandHeight = false;
+
+        var titleRow = FindOrCreateChild(bottomRow, "BottomTitleRow", log);
+        var bodyRow  = FindOrCreateChild(bottomRow, "BottomBodyRow",  log);
+        titleRow.SetSiblingIndex(0);
+        bodyRow .SetSiblingIndex(1);
+
+        SetHeight(titleRow, BottomTitleHeight);
+        ClearFixedHeight(bodyRow);
+        Flexible(bodyRow, flexibleHeight: 1f);
+
+        ConfigureColumnRow(titleRow);
+        ConfigureColumnRow(bodyRow);
+
+        // ── 左列: 画像花火 ──
+        var listTitle = MoveOrCreateChild(panel, titleRow, "EntryListTitle", log);
+        BuildColumnTitle(listTitle, "画像花火の一覧");
+        SetColumnWidth(listTitle, fixedWidth: false);
+
+        var scroll = MoveOrCreateChild(panel, bodyRow, "EntryScrollView", log);
+
+        // ── 右列: 検知ログ ──
+        var logTitle = MoveOrCreateChild(panel, titleRow, "GestureLogTitle", log);
+        BuildColumnTitle(logTitle, "検知したジェスチャー");
+        SetColumnWidth(logTitle, fixedWidth: true);
+
+        var logScroll = MoveOrCreateChild(panel, bodyRow, "GestureLogScrollView", log);
+
+        listTitle.SetSiblingIndex(0);
+        logTitle .SetSiblingIndex(1);
+        scroll   .SetSiblingIndex(0);
+        logScroll.SetSiblingIndex(1);
+
+        BuildScrollView(scroll, log);
+        BuildGestureLog(logScroll, log);
+    }
+
+    // 下段の列割り。見出しの行と中身の行に「同じ値」を入れることで列が縦に揃う。
+    // 2か所に同じ設定を書くとどちらかを直し忘れて静かにズレるので、必ずここを通す
+    private static void ConfigureColumnRow(Transform row)
+    {
+        var layout = GetOrAdd<HorizontalLayoutGroup>(row.gameObject);
+        layout.padding                = new RectOffset(0, 0, 0, 0);
+        layout.spacing                = PanelSpacing;
+        layout.childAlignment         = TextAnchor.UpperLeft;
+        layout.childControlWidth      = true;
+        layout.childControlHeight     = true;
+        // 幅は LayoutElement 任せ（一覧が flexible、ログが固定）。
+        // ForceExpandWidth を立てると余りが2列へ均等に配られ、ログ幅の固定が効かなくなる
+        layout.childForceExpandWidth  = false;
+        layout.childForceExpandHeight = true;
+    }
+
+    // 列の幅。右列（ログ）は固定幅、左列（一覧）は残り全部。
+    // 見出しと中身に同じ配分を入れるので、この1つの関数を両方へ適用する
+    private static void SetColumnWidth(Transform column, bool fixedWidth)
+    {
+        var le = GetOrAdd<LayoutElement>(column.gameObject);
+        if (fixedWidth)
+        {
+            le.minWidth       = GestureLogWidth;
+            le.preferredWidth = GestureLogWidth;
+            le.flexibleWidth  = 0f;
+        }
+        else
+        {
+            // 一覧側は「残り全部」。min/preferred を -1（未設定）に戻しておかないと、
+            // 以前の再構築で入った値が残って幅の配分が固定されてしまう
+            le.minWidth       = -1f;
+            le.preferredWidth = -1f;
+            le.flexibleWidth  = 1f;
+        }
+    }
+
+    private static void BuildColumnTitle(Transform title, string defaultText)
+    {
+        var text = GetOrAdd<TextMeshProUGUI>(title.gameObject);
+        if (string.IsNullOrEmpty(text.text) || text.text == "New Text")
+            text.text = defaultText;
+        text.enableAutoSizing = false;
+        text.fontSize         = HelpFontSize;
+        text.alignment        = TextAlignmentOptions.MidlineLeft;
+        text.textWrappingMode = TextWrappingModes.NoWrap;
+        text.overflowMode     = TextOverflowModes.Ellipsis;
+        // 本文（白）より一段落とした色。中身が主役、見出しは道しるべ
+        text.color            = AdminUiStyle.HelpTextColor;
+        text.raycastTarget    = false;
+    }
+
+    // パネル全体から名前で探して、目的の親へ引っ越す。どこにも無ければ親の下に作る。
+    //
+    // FindOrCreateChild は「探す起点＝引っ越し先の親」なので、別の場所に在るものを
+    // 移動させる用途には使えない（見つからず空の同名オブジェクトを作ってしまい、
+    // 中身の入った本物が元の場所に取り残される）。
+    // 下段は器の作りを変えるたびに既存の部品が別の親の下に居るので、こちらを使う
+    private static Transform MoveOrCreateChild(Transform panel, Transform parent,
+                                               string name, StringBuilder log)
+    {
+        var found = FindDescendant(panel, name);
+        if (found == null) return FindOrCreateChild(parent, name, log);
+
+        if (found.parent != parent)
+        {
+            Reparent(found, parent);
+            log.AppendLine($"  {name} を {parent.name} へ移動");
+        }
+        return found;
+    }
+
+    // ── 検知ログ ──
+    // 検知したジェスチャーを上から順に積むだけの読み取り専用パネル。
+    // 押せる部品は一切置かない（操作は既存のタブ側に集約されている）。
+    //
+    // ── 行を GameObject で作らない理由 ──
+    //   一覧（EntryScrollView）は行ごとにボタンを持つので行を GameObject で作っているが、
+    //   ログは押せる部品が無いので、1枚の TextMeshProUGUI に流し込むだけで足りる。
+    //   200行ぶんの GameObject を作らずに済み、Manager 側も文字列を差し替えるだけになる。
+    //   スクロール量は ContentSizeFitter が TMP の preferredHeight から出す
+    private static void BuildGestureLog(Transform scroll, StringBuilder log)
+    {
+        // 見出しは下段共通の見出し行にあるので、ここはスクロールだけを組む。
+        // 幅は右列の固定幅、高さは中身の行いっぱい（親の HorizontalLayoutGroup が伸ばす）
+        SetColumnWidth(scroll, fixedWidth: true);
+        ClearFixedHeight(scroll);
+        Flexible(scroll, flexibleHeight: 1f);
+
+        var rect = GetOrAdd<ScrollRect>(scroll.gameObject);
+
+        var viewport   = FindOrCreateChild(scroll, "GestureLogViewport", log);
+        var viewportRt = viewport.GetComponent<RectTransform>();
+        viewportRt.anchorMin        = Vector2.zero;
+        viewportRt.anchorMax        = Vector2.one;
+        viewportRt.pivot            = new Vector2(0f, 1f);
+        viewportRt.offsetMin        = Vector2.zero;
+        viewportRt.offsetMax        = new Vector2(-ScrollbarWidth, 0f);
+        viewportRt.anchoredPosition = Vector2.zero;
+
+        // Viewport の Image は3役を兼ねる。Mask の型、ログ地の色、そして
+        // ホイールスクロールの当たり判定（文字側は raycastTarget を切ってある）
+        var viewportImage = GetOrAdd<Image>(viewport.gameObject);
+        viewportImage.color = AdminUiStyle.RowNormal;
+        GetOrAdd<Mask>(viewport.gameObject).showMaskGraphic = true;
+
+        // ── Content 自体が本文（TMP）──
+        // ⚠️ 名前を "Content" にしないこと。
+        //   WireManager が一覧の行の親を FindDescendant(panel, "Content") で
+        //   探しており、深さ優先で先に見つかった方が entryListContent に入る。
+        //   ログ側が先に見つかると、画像花火の行がログの中に生成される
+        var content   = FindOrCreateChild(viewport, "GestureLogContent", log);
+        var contentRt = content.GetComponent<RectTransform>();
+        contentRt.anchorMin        = new Vector2(0f, 1f);
+        contentRt.anchorMax        = new Vector2(1f, 1f);
+        contentRt.pivot            = new Vector2(0f, 1f);
+        contentRt.sizeDelta        = Vector2.zero;
+        contentRt.anchoredPosition = Vector2.zero;
+
+        var body = GetOrAdd<TextMeshProUGUI>(content.gameObject);
+        body.enableAutoSizing = false;
+        body.fontSize         = GestureLogFontSize;
+        body.alignment        = TextAlignmentOptions.TopLeft;
+        body.textWrappingMode = TextWrappingModes.NoWrap;
+        body.overflowMode     = TextOverflowModes.Overflow;   // 高さは Fitter が追従させる
+        body.richText         = true;                          // 種類ごとに色を変えるため
+        body.color            = AdminUiStyle.TextOnPanel;
+        body.margin           = new Vector4(8f, 6f, 8f, 6f);
+        // 文字が当たり判定を持つと、その上ではホイールが Viewport に届かない
+        body.raycastTarget    = false;
+
+        var fitter = GetOrAdd<ContentSizeFitter>(content.gameObject);
+        fitter.horizontalFit = ContentSizeFitter.FitMode.Unconstrained;
+        fitter.verticalFit   = ContentSizeFitter.FitMode.PreferredSize;
+
+        rect.content              = contentRt;
+        rect.viewport             = viewportRt;
+        rect.horizontal           = false;
+        rect.vertical             = true;
+        rect.movementType         = ScrollRect.MovementType.Clamped;
+        rect.scrollSensitivity    = GestureLogFontSize * 2f;
+        rect.horizontalScrollbar  = null;
+        rect.verticalScrollbar    = BuildVerticalScrollbar(scroll, log);
+        rect.verticalScrollbarVisibility = ScrollRect.ScrollbarVisibility.AutoHide;
+    }
+
+    // 縦スクロールバーを作る（無ければ）。
+    // 一覧側（EntryScrollView）のバーはシーンに既に在るものを配置し直すだけなので
+    // 作る処理が無かった。ログ側は一から作る必要があるためここに用意する
+    private static Scrollbar BuildVerticalScrollbar(Transform scrollRoot, StringBuilder log)
+    {
+        var bar   = FindOrCreateChild(scrollRoot, "GestureLogScrollbar", log);
+        var barRt = bar.GetComponent<RectTransform>();
+        barRt.anchorMin        = new Vector2(1f, 0f);
+        barRt.anchorMax        = new Vector2(1f, 1f);
+        barRt.pivot            = new Vector2(1f, 1f);
+        barRt.sizeDelta        = new Vector2(ScrollbarWidth, 0f);
+        barRt.anchoredPosition = Vector2.zero;
+
+        var barImage = GetOrAdd<Image>(bar.gameObject);
+        barImage.color = AdminUiStyle.SliderTrack;
+
+        var slidingArea = FindOrCreateChild(bar, "GestureLogSlidingArea", log);
+        var slidingRt   = slidingArea.GetComponent<RectTransform>();
+        slidingRt.anchorMin        = Vector2.zero;
+        slidingRt.anchorMax        = Vector2.one;
+        slidingRt.pivot            = new Vector2(0.5f, 0.5f);
+        slidingRt.offsetMin        = Vector2.zero;
+        slidingRt.offsetMax        = Vector2.zero;
+        slidingRt.anchoredPosition = Vector2.zero;
+
+        var handle   = FindOrCreateChild(slidingArea, "GestureLogHandle", log);
+        var handleRt = handle.GetComponent<RectTransform>();
+        handleRt.offsetMin = Vector2.zero;
+        handleRt.offsetMax = Vector2.zero;
+
+        var handleImage = GetOrAdd<Image>(handle.gameObject);
+        handleImage.color = AdminUiStyle.SliderHandle;
+
+        var scrollbar = GetOrAdd<Scrollbar>(bar.gameObject);
+        scrollbar.direction     = Scrollbar.Direction.BottomToTop;
+        scrollbar.handleRect    = handleRt;
+        scrollbar.targetGraphic = handleImage;
+
+        return scrollbar;
+    }
+
     private static void BuildScrollView(Transform scroll, StringBuilder log)
     {
         // 【バグ修正】ScrollRect と同じ GameObject に VerticalLayoutGroup が付いていた。
@@ -849,7 +1152,9 @@ public static class AdminUIBuilder
             log.AppendLine("  [FIX] EntryScrollView の ContentSizeFitter を削除");
         }
 
-        // 残りの縦幅を全部使う。これで一覧が3行 → 10行以上見えるようになる
+        // 縦は残り全部（中身の行が行いっぱいに伸ばす）、横はログ列を引いた残り全部。
+        // 幅の配分はログ列と同じ関数で入れる（ログ幅を変えても一覧が自動で追従する）
+        SetColumnWidth(scroll, fixedWidth: false);
         Flexible(scroll, flexibleHeight: 1f);
         var scrollLe = GetOrAdd<LayoutElement>(scroll.gameObject);
         scrollLe.minHeight = 200f;
@@ -978,6 +1283,7 @@ public static class AdminUIBuilder
         AssignButton(so, panel, "MatteButton",       "matteButton",       "matteText",       log);
         AssignButton(so, panel, "SkeletonButton",    "skeletonButton",    "skeletonText",    log);
         AssignButton(so, panel, "PersonPosButton",   "personPosButton",   "personPosText",   log);
+        AssignButton(so, panel, "MirrorButton",      "mirrorButton",      "mirrorText",      log);
 
         // ── 宇宙モードタブ ──
         AssignButton(so, panel, "SpaceModeButton",   "spaceModeButton",   "spaceModeText",   log);
@@ -998,17 +1304,18 @@ public static class AdminUIBuilder
         // handUpText）は先頭1文字の大小しか違わないので、TuneSliders から機械的に導く。
         // 名前を1か所（TuneSliders）でしか持たないので、片方だけ直して
         // 黙って null が入る、という失敗が起きない
-        foreach (var spec in TuneSliders)
-        {
-            string field = char.ToLowerInvariant(spec.Key[0]) + spec.Key.Substring(1);
-            Assign(so, field + "Slider", FindComponent<Slider>(panel, spec.Key + "Slider"), log);
-            Assign(so, field + "Text",   FindComponent<TextMeshProUGUI>(panel, spec.Key + "Label"), log);
-        }
+        AssignSliders(so, panel, TuneSliders, log);
 
         // 行の親は Viewport > Content
         var content = FindDescendant(panel, "Content");
         if (content != null)
             Assign(so, "entryListContent", content, log);
+
+        // ── 検知ログ ──
+        // 本文は GestureLogContent（Content 自体が TMP）。ScrollRect は
+        // 新しい行が来たときに末尾へ追従させるために要る
+        Assign(so, "gestureLogText",   FindComponent<TextMeshProUGUI>(panel, "GestureLogContent"),  log);
+        Assign(so, "gestureLogScroll", FindComponent<ScrollRect>(panel, "GestureLogScrollView"),    log);
 
         // previewImage / detailText は AdminPanel の外にある想定なので触らない。
         // cameraBackground も AdminPanel の外（CameraBackground オブジェクト）なので触らない。
@@ -1016,6 +1323,22 @@ public static class AdminUIBuilder
         // 手作業でのアサインは不要になっている
 
         so.ApplyModifiedProperties();
+    }
+
+    // スライダー表から Slider 本体とラベルをまとめて結線する。
+    // GameObject 名（HandUpSlider / HandUpLabel）と フィールド名（handUpSlider /
+    // handUpText）は先頭1文字の大小しか違わないので、表から機械的に導ける。
+    // 名前を1か所（スライダー表）でしか持たないので、片方だけ直して
+    // 黙って null が入る、という失敗が起きない
+    private static void AssignSliders(SerializedObject so, Transform panel,
+                                      SliderSpec[] specs, StringBuilder log)
+    {
+        foreach (var spec in specs)
+        {
+            string field = char.ToLowerInvariant(spec.Key[0]) + spec.Key.Substring(1);
+            Assign(so, field + "Slider", FindComponent<Slider>(panel, spec.Key + "Slider"), log);
+            Assign(so, field + "Text",   FindComponent<TextMeshProUGUI>(panel, spec.Key + "Label"), log);
+        }
     }
 
     // 「ボタン本体」と「その配下の Label(TMP)」をまとめて結線する。
