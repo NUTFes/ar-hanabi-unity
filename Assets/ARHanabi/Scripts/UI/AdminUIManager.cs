@@ -11,7 +11,8 @@ using System.Collections.Generic;
 // 画面レイアウト（Canvas 上）:
 //   ┌──────────────────────────────────────────────────────┐
 //   │  🎆 花火管理                          [終了] [閉じる] │ Header
-//   │  ［基本］［宇宙モード］［検出の調整］  全12件 / 有効8件│ TabBar
+//   │  ［基本］［宇宙モード］［検出の調整］［花火の型］     │ TabBar
+//   │  ［体験］［ドーパミン］              全12件 / 有効8件│
 //   │  （選択中のタブの中身。同時に1枚だけ出る）            │ TabContent
 //   │  ▸ タブごとの1行ヘルプ                                │ TabHelpText
 //   │  ステータス（2行・接頭辞を色分け）                    │ StatusText
@@ -99,12 +100,15 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private TextMeshProUGUI  tabShellText;
     [SerializeField] private Button           tabExperienceButton;
     [SerializeField] private TextMeshProUGUI  tabExperienceText;
+    [SerializeField] private Button           tabDopamineButton;
+    [SerializeField] private TextMeshProUGUI  tabDopamineText;
     [Tooltip("各タブの中身。SetActive で1枚だけ表示する")]
     [SerializeField] private Transform        tabBasicPage;
     [SerializeField] private Transform        tabSpacePage;
     [SerializeField] private Transform        tabTunePage;
     [SerializeField] private Transform        tabShellPage;
     [SerializeField] private Transform        tabExperiencePage;
+    [SerializeField] private Transform        tabDopaminePage;
     [Tooltip("選択中のタブに応じて切り替わる1行の説明文")]
     [SerializeField] private TextMeshProUGUI  tabHelpText;
     [Tooltip("タブ行の右端に常設する件数表示。\n" +
@@ -137,6 +141,32 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private TextMeshProUGUI  comboTrailText;
     [SerializeField] private Button           ensembleButton;
     [SerializeField] private TextMeshProUGUI  ensembleText;
+
+    [Header("ドーパミン")]
+    [Tooltip("ドーパミンモードのマスターON/OFF。ONの間だけ花火が虹色になり、\n" +
+             "音が先バレ音・大当たり音に差し替わり、検出のしきい値が緩む。\n" +
+             "この1操作で展示の挙動が大きく変わるので、押すとステータス行とログに記録が残る")]
+    [SerializeField] private Button           dopamineButton;
+    [SerializeField] private TextMeshProUGUI  dopamineText;
+    [SerializeField] private Button           dopamineRainbowButton;
+    [SerializeField] private TextMeshProUGUI  dopamineRainbowText;
+    [SerializeField] private Button           dopamineSfxButton;
+    [SerializeField] private TextMeshProUGUI  dopamineSfxText;
+    [SerializeField] private Button           dopamineDetectButton;
+    [SerializeField] private TextMeshProUGUI  dopamineDetectText;
+
+    [Tooltip("ドーパミンモード中だけ使う数値。\n" +
+             "⚠️ 下3本は『検出の調整』タブの同名スライダーとは別の値。\n" +
+             "ドーパミンモードは通常の保存値を書き換えず、モード中だけこちらを読む\n" +
+             "（OFFに戻したとき通常の設定が一切汚れていないことが最重要の制約）")]
+    [SerializeField] private Slider           hueSpeedSlider;
+    [SerializeField] private TextMeshProUGUI  hueSpeedText;
+    [SerializeField] private Slider           dopaCooldownSlider;
+    [SerializeField] private TextMeshProUGUI  dopaCooldownText;
+    [SerializeField] private Slider           dopaHandUpSlider;
+    [SerializeField] private TextMeshProUGUI  dopaHandUpText;
+    [SerializeField] private Slider           dopaJumpSlider;
+    [SerializeField] private TextMeshProUGUI  dopaJumpText;
 
     [Header("基本タブのトグル")]
     [SerializeField] private Button           imgEnableButton;
@@ -230,6 +260,7 @@ public class AdminUIManager : MonoBehaviour
     private FireworkLauncher    _launcher;
     private SpaceModeController _spaceMode;
     private ExperienceDirector  _experience;
+    private DopamineModeController _dopamine;
     private GestureDetector     _gesture;
     private CameraCircleMatte   _matte;
     private PoseLandmarkDetector _poseDetector;
@@ -241,7 +272,7 @@ public class AdminUIManager : MonoBehaviour
     // ── タブ ──
     // 宇宙モードのマスターと違い、この値自体は「効き目」を持たない純粋なUI表示切替なので
     // 永続化しない（次回起動時は「基本」から始まってよい）
-    private enum AdminTab { Basic, Space, Tune, Shell, Experience }
+    private enum AdminTab { Basic, Space, Tune, Shell, Experience, Dopamine }
     private AdminTab _activeTab = AdminTab.Basic;
 
     // 終了ボタンの2段階確認。行ごとの確認待ちを持つ削除ボタンと違い
@@ -355,6 +386,23 @@ public class AdminUIManager : MonoBehaviour
         UpdateComboTrailLabel();
         UpdateEnsembleLabel();
 
+        // ドーパミンモードも宇宙モード・体験演出と同じ3つ目の「マスター＋個別設定」。
+        // GetOrCreate() はシーンに無ければ自分で生成して返すので null チェックは要らない
+        _dopamine = DopamineModeController.GetOrCreate();
+        dopamineButton        ?.onClick.AddListener(OnDopamineMasterClicked);
+        dopamineRainbowButton ?.onClick.AddListener(OnDopamineRainbowClicked);
+        dopamineSfxButton     ?.onClick.AddListener(OnDopamineSfxClicked);
+        dopamineDetectButton  ?.onClick.AddListener(OnDopamineDetectClicked);
+
+        // ── なぜ購読するのか ──
+        //   ドーパミンの状態は Admin 以外の経路でも変わりうる（Inspector で
+        //   masterEnabled を触る、将来キーボードショートカットを足す など）。
+        //   ボタンのハンドラからラベルを更新するだけだと、その経路で変わったときに
+        //   「検出の調整」タブの併記が古い値のまま残る。
+        //   OnChanged を購読しておけば、どの経路から変わっても表示が追いつく
+        _dopamine.OnChanged += OnDopamineChanged;
+        UpdateDopamineLabels();
+
         // 設定パネル（ジェスチャー感度・花火の出し方）も FireworkManager に依存しないので、
         // 同じ理由で早期 return より先に配線する。
         // GestureDetector はシーンに1つある前提で自動解決する（AdminPanel の外にあるため
@@ -404,6 +452,7 @@ public class AdminUIManager : MonoBehaviour
         tabTuneButton       ?.onClick.AddListener(() => SwitchTab(AdminTab.Tune));
         tabShellButton      ?.onClick.AddListener(() => SwitchTab(AdminTab.Shell));
         tabExperienceButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Experience));
+        tabDopamineButton   ?.onClick.AddListener(() => SwitchTab(AdminTab.Dopamine));
 
         // 「花火の型」タブの中身。並ぶボタンは型そのものなので、
         // 一覧が実行時にしか分からない（Asset を差し替えれば変わる）。
@@ -622,6 +671,14 @@ public class AdminUIManager : MonoBehaviour
     {
         if (_manager != null)
             _manager.OnEntriesChanged -= RefreshList;
+
+        if (_gestureLogSubscribed && PoseEventBus.Instance != null)
+            PoseEventBus.Instance.OnGestureDetected -= OnGestureLogged;
+
+        // DopamineModeController は DontDestroyOnLoad で生き続けるので、
+        // 解除しないとシーンを跨いだときに破棄済みの this を呼びに来る
+        if (_dopamine != null)
+            _dopamine.OnChanged -= OnDopamineChanged;
     }
 
     // ── 表示 / 非表示 ──
@@ -1269,6 +1326,145 @@ public class AdminUIManager : MonoBehaviour
         ApplyToggleVisual(ensembleButton, ensembleText, "いっしょに",
                           _experience != null && _experience.EnsembleSetting);
 
+    // ── ドーパミンモード ──
+    // 宇宙モード・体験演出と同じ構造（マスター1個＋個別スイッチ）。
+    // ラベルに出すのは常に個別設定値（*Setting）で、実効値（*Enabled）は出さない。
+    // マスターOFF中に3つとも [OFF] に見えると、個別スイッチが勝手にリセットされたように
+    // 誤解される（実際はマスターを戻せば元の組み合わせに戻る）ため
+    //（この方針は宇宙モードのコメントに書かれているものをそのまま踏襲している）。
+
+    // ── なぜマスターだけ記録を残すのか ──
+    //   この1操作で花火の色・音・検出のきびしさが同時に変わる。
+    //   後から「いつ切り替えたのか」「今どちらなのか」を追えないと、
+    //   「急に反応がよくなった/音が変わった」という現場の報告と突き合わせられない。
+    //   ステータス行は今の状態を見せるため、Debug.Log は後から時刻ごと追うため。
+    private void OnDopamineMasterClicked()
+    {
+        if (_dopamine == null) return;
+
+        _dopamine.ToggleMaster();
+        UpdateDopamineLabels();
+        UpdateTuneLabels();
+
+        bool on = _dopamine.MasterEnabled;
+        SetStatus(on
+            ? "[WARN] ドーパミンモード ON（虹色・大当たり音・検出ゆるめ。戻すときはもう一度押す）"
+            : "[OK] ドーパミンモード OFF（通常の花火・音・検出に戻りました）");
+        Debug.Log($"[AdminUI] Dopamine: {(on ? "ON" : "OFF")}");
+    }
+
+    private void UpdateDopamineLabel() =>
+        ApplyToggleVisual(dopamineButton, dopamineText, "ドーパミン",
+                          _dopamine != null && _dopamine.MasterEnabled);
+
+    private void OnDopamineRainbowClicked()
+    {
+        if (_dopamine == null) return;
+        _dopamine.ToggleRainbow();
+        UpdateDopamineRainbowLabel();
+        UpdateTuneLabels();
+    }
+
+    private void UpdateDopamineRainbowLabel() =>
+        ApplyToggleVisual(dopamineRainbowButton, dopamineRainbowText, "虹色の花火",
+                          _dopamine != null && _dopamine.RainbowSetting);
+
+    private void OnDopamineSfxClicked()
+    {
+        if (_dopamine == null) return;
+        _dopamine.ToggleAudio();
+        UpdateDopamineSfxLabel();
+        UpdateTuneLabels();
+    }
+
+    private void UpdateDopamineSfxLabel() =>
+        ApplyToggleVisual(dopamineSfxButton, dopamineSfxText, "大当たり音",
+                          _dopamine != null && _dopamine.AudioSetting);
+
+    // この1つだけは検出の調整タブの見え方を直接変える（併記が出る / 消える）ので、
+    // UpdateTuneLabels() は保険ではなく本筋の呼び出しになる
+    private void OnDopamineDetectClicked()
+    {
+        if (_dopamine == null) return;
+        _dopamine.ToggleLooseDetection();
+        UpdateDopamineDetectLabel();
+        UpdateTuneLabels();
+    }
+
+    private void UpdateDopamineDetectLabel() =>
+        ApplyToggleVisual(dopamineDetectButton, dopamineDetectText, "検出をゆるめる",
+                          _dopamine != null && _dopamine.LooseDetectionSetting);
+
+    // ドーパミンの状態が変わったときの1か所。
+    // Admin のボタン経由でも、Inspector など別経路でも、必ずここを通る。
+    //
+    // ⚠️ スライダーの「位置」はここで戻さない（ラベルだけを読み直す）。
+    //    値を書き戻すと、ドラッグ中に onValueChanged → OnChanged → 位置の書き戻し、
+    //    という往復が生まれて操作が跳ねる。位置は人が動かしたものが常に正しい
+    private void OnDopamineChanged()
+    {
+        UpdateDopamineLabels();
+        UpdateTuneLabels();
+
+        // 検出の調整タブを開いたままドーパミンを切り替えると、
+        // ヘルプ行だけが古い文言のまま残る（SwitchTab を通らないため）
+        ApplyTabHelpText();
+    }
+
+    private void UpdateDopamineLabels()
+    {
+        UpdateDopamineLabel();
+        UpdateDopamineRainbowLabel();
+        UpdateDopamineSfxLabel();
+        UpdateDopamineDetectLabel();
+        UpdateDopamineSliderLabels();
+    }
+
+    private void UpdateDopamineSliderLabels()
+    {
+        UpdateHueSpeedLabel();
+        UpdateDopaCooldownLabel();
+        UpdateDopaHandUpLabel();
+        UpdateDopaJumpLabel();
+    }
+
+    // 色相が1周する速さ。0 にすると回転が止まり、1発の中での色相の散らばりだけが残る
+    private void UpdateHueSpeedLabel()
+    {
+        if (hueSpeedText == null) return;
+        hueSpeedText.text = _dopamine != null
+            ? $"色相が回る速さ  {_dopamine.HueCycleHz:F2}周/秒"
+            : "色相が回る速さ  ―";
+    }
+
+    // ── 以下3本は「検出の調整」タブの同名スライダーとは別の値 ──
+    //   ラベルに「ドーパミン中の」と書き添えないのは、そもそもこのタブ全体が
+    //   ドーパミンの設定であり、タブ名が既にその文脈を与えているため。
+    //   逆に検出の調整タブ側は文脈が無いので、あちらだけ「（ドーパミン中 …）」と明示する。
+    private void UpdateDopaCooldownLabel()
+    {
+        if (dopaCooldownText == null) return;
+        dopaCooldownText.text = _dopamine != null
+            ? $"連発防止  {_dopamine.RelaxCooldown:F1}秒"
+            : "連発防止  ―";
+    }
+
+    private void UpdateDopaHandUpLabel()
+    {
+        if (dopaHandUpText == null) return;
+        dopaHandUpText.text = _dopamine != null
+            ? $"手上げのきびしさ  {_dopamine.RelaxHandUpThreshold:F2}（肩幅比）"
+            : "手上げのきびしさ  ―";
+    }
+
+    private void UpdateDopaJumpLabel()
+    {
+        if (dopaJumpText == null) return;
+        dopaJumpText.text = _dopamine != null
+            ? $"ジャンプの高さ  {_dopamine.RelaxJumpRiseThreshold:F2}（肩幅比）"
+            : "ジャンプの高さ  ―";
+    }
+
     // 花火をその人の位置から打つか（ON）、常に画面中央から打つか（OFF）。
     // FireworkLauncher.LaunchAtScreenCenter を裏返した値がこのボタンの ON/OFF になる
     private void OnPersonPosClicked()
@@ -1321,26 +1517,55 @@ public class AdminUIManager : MonoBehaviour
         if (tabTunePage       != null) tabTunePage      .gameObject.SetActive(tab == AdminTab.Tune);
         if (tabShellPage      != null) tabShellPage     .gameObject.SetActive(tab == AdminTab.Shell);
         if (tabExperiencePage != null) tabExperiencePage.gameObject.SetActive(tab == AdminTab.Experience);
+        if (tabDopaminePage   != null) tabDopaminePage  .gameObject.SetActive(tab == AdminTab.Dopamine);
 
         ApplyTabVisual(tabBasicButton,      tabBasicText,      tab == AdminTab.Basic);
         ApplyTabVisual(tabSpaceButton,      tabSpaceText,      tab == AdminTab.Space);
         ApplyTabVisual(tabTuneButton,       tabTuneText,       tab == AdminTab.Tune);
         ApplyTabVisual(tabShellButton,      tabShellText,      tab == AdminTab.Shell);
         ApplyTabVisual(tabExperienceButton, tabExperienceText, tab == AdminTab.Experience);
+        ApplyTabVisual(tabDopamineButton,   tabDopamineText,   tab == AdminTab.Dopamine);
 
-        if (tabHelpText != null)
-        {
-            tabHelpText.text = tab switch
-            {
-                AdminTab.Space      => "宇宙モードONで枠・UFO・宇宙花火が有効。個別スイッチはOFF中も保存されます",
-                AdminTab.Tune       => "右へ動かすほど反応しにくくなります（誤発火を減らしたいときは右へ）",
-                AdminTab.Shell      => "型を押すとその花火だけを1発打ちます（開き方・落ち方の確認用）",
-                AdminTab.Experience => "体験演出ONでコンボ・いっしょにが有効。個別スイッチはOFF中も保存されます",
-                _                   => "テスト打上=花火を1発試す ／ 丸窓=映像をドーム型に切り抜く表示 ／ " +
-                                       "花火ごとの細かさは下の一覧の［細かさ］から",
-            };
-        }
+        ApplyTabHelpText();
+
+        // ── タブを開いた時点でラベルを読み直す ──
+        //   ⚠️ これはドーパミン抜きでも正しい修正。
+        //      これまで検出の調整タブのラベルは Start() で1回組むだけだったので、
+        //      Inspector から GestureDetector の値を触ってからタブを開くと、
+        //      スライダーの位置は正しいのにラベルの数字だけ古い、という状態になっていた。
+        //      「開いたときに読み直す」が入っていれば、値がどこから変わっても表示が合う
+        if (tab == AdminTab.Tune) UpdateTuneLabels();
     }
+
+    // タブごとの1行ヘルプ。SwitchTab から切り出してあるのは、
+    // ドーパミンの状態が変わったときにも（タブを開き直さずに）文言を更新するため。
+    // 検出の調整タブのヘルプだけはドーパミン中に意味が変わるので条件分岐する
+    private void ApplyTabHelpText()
+    {
+        if (tabHelpText == null) return;
+
+        tabHelpText.text = _activeTab switch
+        {
+            AdminTab.Space      => "宇宙モードONで枠・UFO・宇宙花火が有効。個別スイッチはOFF中も保存されます",
+            AdminTab.Tune       => TuneHelpText(),
+            AdminTab.Shell      => "型を押すとその花火だけを1発打ちます（開き方・落ち方の確認用）",
+            AdminTab.Experience => "体験演出ONでコンボ・いっしょにが有効。個別スイッチはOFF中も保存されます",
+            AdminTab.Dopamine   => "ドーパミンONで虹色の花火・大当たり音・ゆるい検出になります。" +
+                                   "個別スイッチはOFF中も保存されます（マスターだけは毎起動OFFから）",
+            _                   => "テスト打上=花火を1発試す ／ 丸窓=映像をドーム型に切り抜く表示 ／ " +
+                                   "左右反転=映像を鏡像にする（骨格・花火も一緒に反転）／ " +
+                                   "花火ごとの細かさは下の一覧の［細かさ］から",
+        };
+    }
+
+    // ドーパミン中はこのタブの値が読まれない。ラベルの併記だけだと
+    // 「4つとも括弧が付いている」ことの理由が画面のどこにも無いので、
+    // ヘルプ行に一言だけ理由を出す（値そのものは各ラベルが持つ）
+    private string TuneHelpText() =>
+        _gesture != null && _gesture.DetectionOverridden
+            ? "ドーパミン中はここの値は使われません（括弧内が実際に効いている値）。" +
+              "動かした値はドーパミンをOFFにした瞬間から効きます"
+            : "右へ動かすほど反応しにくくなります（誤発火を減らしたいときは右へ）";
 
     // ── 「花火の型」タブ（型を指名してテスト打上）──
     //
@@ -1494,13 +1719,31 @@ public class AdminUIManager : MonoBehaviour
             });
         }
 
-        UpdateHandUpLabel();
-        UpdateJumpLabel();
-        UpdateCooldownLabel();
-        UpdateHoldLabel();
+        // ── ドーパミンモード中だけ使う数値 ──
+        //   ⚠️ 下3本の書き込み先は GestureDetector ではなく DopamineModeController。
+        //      ドーパミンは通常の保存値を書き換えず、モード中だけ自分の値を読ませる
+        //      （OFFに戻したとき通常の設定が汚れていないことが最重要の制約）。
+        //      ここで _gesture 側へ書いてしまうと、その制約が静かに壊れる。
+        //
+        //   setter が OnChanged を出すので、検出の調整タブのラベルの併記は
+        //   購読側（OnDopamineChanged）が勝手に追いつく
+        if (_dopamine != null)
+        {
+            InitSlider(hueSpeedSlider,     _dopamine.HueCycleHz,
+                       v => { _dopamine.HueCycleHz = v;             UpdateHueSpeedLabel();     });
+            InitSlider(dopaCooldownSlider, _dopamine.RelaxCooldown,
+                       v => { _dopamine.RelaxCooldown = v;          UpdateDopaCooldownLabel(); });
+            InitSlider(dopaHandUpSlider,   _dopamine.RelaxHandUpThreshold,
+                       v => { _dopamine.RelaxHandUpThreshold = v;   UpdateDopaHandUpLabel();   });
+            InitSlider(dopaJumpSlider,     _dopamine.RelaxJumpRiseThreshold,
+                       v => { _dopamine.RelaxJumpRiseThreshold = v; UpdateDopaJumpLabel();     });
+        }
+
+        UpdateTuneLabels();
         UpdateImgChanceLabel();
         UpdatePersonConfLabel();
         UpdateMaxPeopleLabel();
+        UpdateDopamineSliderLabels();
     }
 
     private static void InitSlider(Slider slider, float initialValue, UnityEngine.Events.UnityAction<float> onChanged)
@@ -1540,12 +1783,38 @@ public class AdminUIManager : MonoBehaviour
         }
     }
 
+    // ── 検出の調整タブのラベル（保存値＋ドーパミン中の実効値）──
+    //
+    // ── なぜ両方を出すのか ──
+    //   ドーパミンモード中、このタブのスライダーは通常の値を指したままになる。
+    //   これ自体は正しい（通常値は生きている。読まれていないだけ）が、
+    //   スタッフには「動かしても効かない」としか見えない。
+    //
+    //   ここで片方しか出さないと、どちらを選んでも必ず誤解が起きる。
+    //     ・実効値だけを出す → スライダーの位置とラベルの数字が食い違う。
+    //       「スライダーを動かしても何も変わらない」と見える
+    //     ・保存値だけを出す → 表示と実際の挙動が食い違う。
+    //       「0.5 と出ているのに手を少し上げただけで上がる」と見える
+    //   両方を並べて初めて「今はこちらが効いている」が正しく伝わる。
+    //   これが唯一の正直な表示なので、どちらか一方に減らさないこと。
+    //
+    // ── なぜスライダーを無効化しないのか ──
+    //   開演中にドーパミンで盛り上げながら、次のセッション用の値を仕込めるほうが
+    //   運用上有利で、仕込んだ値はドーパミンをOFFにした瞬間からそのまま効く。
+    //   無効化すると「なぜ触れないのか」を現場で説明する手間が増えるだけで、
+    //   防げる事故が1つも無い（誤って触っても通常運用の値が変わるだけ）。
+    //
+    // 併記は DetectionOverridden が true のときだけ。OFF中に空の括弧や
+    // 同じ数字が並ぶと、それはそれで「何かがおかしい」と読まれてしまう。
     private void UpdateHandUpLabel()
     {
         if (handUpText == null) return;
-        handUpText.text = _gesture != null
-            ? $"手上げ判定のきびしさ  {_gesture.HandUpThreshold:F2}（肩幅比）"
-            : "手上げ判定のきびしさ  ―";
+        if (_gesture == null) { handUpText.text = "手上げ判定のきびしさ  ―"; return; }
+
+        string text = $"手上げ判定のきびしさ  {_gesture.HandUpThreshold:F2}（肩幅比）";
+        if (_gesture.DetectionOverridden)
+            text += $"（ドーパミン中 {_gesture.EffectiveHandUpThreshold:F2}）";
+        handUpText.text = text;
     }
 
     private void UpdateJumpLabel()
@@ -1553,25 +1822,47 @@ public class AdminUIManager : MonoBehaviour
         if (jumpText == null) return;
         // 「きびしさ」ではなく「高さ」。旧実装は瞬間の上昇速度のきびしさだったが、
         // 今は「立っている高さから肩幅比でどれだけ上がったか」を見ているため
-        jumpText.text = _gesture != null
-            ? $"ジャンプの高さ  {_gesture.JumpRiseThreshold:F2}（肩幅比）"
-            : "ジャンプの高さ  ―";
+        if (_gesture == null) { jumpText.text = "ジャンプの高さ  ―"; return; }
+
+        string text = $"ジャンプの高さ  {_gesture.JumpRiseThreshold:F2}（肩幅比）";
+        if (_gesture.DetectionOverridden)
+            text += $"（ドーパミン中 {_gesture.EffectiveJumpRiseThreshold:F2}）";
+        jumpText.text = text;
     }
 
     private void UpdateCooldownLabel()
     {
         if (cooldownText == null) return;
-        cooldownText.text = _gesture != null
-            ? $"連発防止の間隔  {_gesture.GestureCooldown:F1}秒"
-            : "連発防止の間隔  ―";
+        if (_gesture == null) { cooldownText.text = "連発防止の間隔  ―"; return; }
+
+        string text = $"連発防止の間隔  {_gesture.GestureCooldown:F1}秒";
+        if (_gesture.DetectionOverridden)
+            text += $"（ドーパミン中 {_gesture.EffectiveGestureCooldown:F1}秒）";
+        cooldownText.text = text;
     }
 
     private void UpdateHoldLabel()
     {
         if (holdText == null) return;
-        holdText.text = _gesture != null
-            ? $"ポーズの保持時間  {_gesture.PoseHoldDuration:F1}秒"
-            : "ポーズの保持時間  ―";
+        if (_gesture == null) { holdText.text = "ポーズの保持時間  ―"; return; }
+
+        string text = $"ポーズの保持時間  {_gesture.PoseHoldDuration:F1}秒";
+        if (_gesture.DetectionOverridden)
+            text += $"（ドーパミン中 {_gesture.EffectivePoseHoldDuration:F1}秒）";
+        holdText.text = text;
+    }
+
+    // 検出の調整タブの4つをまとめて読み直す。
+    // 呼び口は3つあり、どれか1つが外れても残りで表示が保たれるようにしてある
+    //   1. DopamineModeController.OnChanged の購読（Admin 以外の経路にも効く）
+    //   2. SwitchTab で検出の調整タブを開いたとき
+    //   3. 各ドーパミントグルのハンドラから直接（1の保険。読むだけなので何度呼んでも同じ）
+    private void UpdateTuneLabels()
+    {
+        UpdateHandUpLabel();
+        UpdateJumpLabel();
+        UpdateCooldownLabel();
+        UpdateHoldLabel();
     }
 
     private void UpdateImgChanceLabel()
