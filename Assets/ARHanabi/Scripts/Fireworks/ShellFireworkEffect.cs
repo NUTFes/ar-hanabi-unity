@@ -91,6 +91,11 @@ public class ShellFireworkEffect : MonoBehaviour
         public Color   colorB;
         public float   twinklePhase;
 
+        // ドーパミンモードの虹色で使う、粒ごとに固定の色相オフセット（0..1）。
+        // Grain[] は BuildGrains で1回確保するだけなので、
+        // フィールドを1本増やしても毎フレームのアロケーションは増えない
+        public float   hue;
+
         // 尾の粒は「親の星の軌跡上の一点」に固定されるので、
         // 生成時にその位置を計算して origin に入れてしまう（dir/speed は 0）
     }
@@ -107,6 +112,17 @@ public class ShellFireworkEffect : MonoBehaviour
     // 毎フレーム・毎粒で正規化と除算をやり直さないためのキャッシュ。
     // driftRatio が 0 なら零ベクトルなので、位置の式に何も足されない
     private Vector3        _driftVelocity;
+
+    // ドーパミンモード（虹色）の設定。Launch() で1回だけスナップショットする。
+    //
+    // ── 毎フレーム Instance を見に行かない理由 ──
+    //   1. 飛んでいる最中に管理画面で OFF にされた玉が途中で色を失うと「バグに見える」。
+    //      1発は最後まで同じモードで飛びきるべき
+    //   2. Instance != null は UnityEngine.Object の == オーバーロード
+    //      （ネイティブ側への問い合わせを含む）。粒ごとに呼ぶと実測できる負荷になる
+    //   時間で回る位相（HuePhase）だけは Update() のループの外で1回読む
+    private RainbowTint.Settings _rainbow;
+
     private float          _startTime;
     private bool           _launched;
     private Vector3        _origin;
@@ -141,12 +157,23 @@ public class ShellFireworkEffect : MonoBehaviour
         _origin        = transform.position;
         _total         = preset.TotalLifetime;
         _driftVelocity = preset.DriftVelocity;
+        _rainbow       = RainbowTint.Settings.Capture();
 
         // HDR発光の倍率。粒の色は Color32（上限1.0）でしか渡せないので、
         // 1.0 を超える明るさはマテリアル側の倍率で作る（ParticleAdditive の _Intensity）。
         // 1発ごとに Material を作っているので、型ごとに違う値を入れても
-        // 他の花火には影響しない
-        _material.SetFloat(PropIntensity, Mathf.Max(0.01f, preset.emissiveIntensity));
+        // 他の花火には影響しない。
+        //
+        // 虹色のときは底上げする。彩度を上げると輝度が落ちる
+        //（菊の (1, 0.82, 0.40) は平均0.74、飽和した青 (0,0,1) は 0.33）ので、
+        // 同じ _Intensity のままだと虹色のほうが暗く見えるため。
+        //
+        // ⚠️ 掛け先は Material であって ShellPreset ではない。
+        //   ShellPreset は [Serializable] の参照型で、ライブラリ Asset が持つ
+        //   インスタンスがそのまま渡ってくる。preset.emissiveIntensity に代入すると
+        //   Asset に焼き付いて、Play を抜けても戻らない
+        float boost = _rainbow.Enabled ? _rainbow.IntensityBoost : 1f;
+        _material.SetFloat(PropIntensity, Mathf.Max(0.01f, preset.emissiveIntensity) * boost);
 
         BuildGrains(preset);
         SetupParticleSystem();
@@ -229,6 +256,12 @@ public class ShellFireworkEffect : MonoBehaviour
                 colorA       = cA,
                 colorB       = cB,
                 twinklePhase = Random.Range(0f, Mathf.PI * 2f),
+
+                // 虹色の色相オフセット。i/starCount ではなく黄金比で散らすのが要点。
+                // SampleDirection が方向を黄金角のらせんで配っているので、
+                // 色相まで i に比例させると位置と色相が完全に相関し、
+                // 球面を虹の帯が1本巻く見た目になる（RainbowTint.HueOffset 参照）
+                hue          = RainbowTint.HueOffset(i),
             };
         }
 
@@ -267,6 +300,12 @@ public class ShellFireworkEffect : MonoBehaviour
                     colorA       = deposit,
                     colorB       = deposit,
                     twinklePhase = Random.Range(0f, Mathf.PI * 2f),
+
+                    // 虹色でも親の星と同じ色相を引き継ぐ。
+                    // 尾は「その星が落とした燃えかす」なので、親と違う色になると
+                    // どの粒がどの星のものか読めなくなり、
+                    // 花火ではなくただのカラフルな砂に見える
+                    hue          = star.hue,
                 };
             }
         }
@@ -295,6 +334,11 @@ public class ShellFireworkEffect : MonoBehaviour
             var childColor = p.childRandomColor
                              ? ShellPreset.ChildPalette[Random.Range(0, ShellPreset.ChildPalette.Length)]
                              : p.colorA;
+
+            // 虹色も「小玉1個につき1色」。既存の childRandomColor と同じ粒度に揃える。
+            // 小玉の中でさらに粒ごとの虹にすると、30粒しかない小さな玉が
+            // 色の塊として読めなくなり、千輪という型そのものが壊れる
+            float childHue = RainbowTint.HueOffset(c);
 
             for (int i = 0; i < childStars; i++)
             {
@@ -332,6 +376,7 @@ public class ShellFireworkEffect : MonoBehaviour
                     colorA       = childColor,
                     colorB       = childColor,
                     twinklePhase = Random.Range(0f, Mathf.PI * 2f),
+                    hue          = childHue,
                 };
             }
         }
@@ -354,6 +399,12 @@ public class ShellFireworkEffect : MonoBehaviour
                 colorA       = Color.white,
                 colorB       = Color.white,
                 twinklePhase = 0f,
+
+                // 芯には虹を適用しない（Update 側で Role.Flash を除外している）。
+                // 開花の一撃は白でなければ「割れた瞬間の光」に読めず、
+                // 色が付くと「中心に大きな粒が1つある」としか見えなくなる。
+                // ここの値は使われないので 0 のまま
+                hue          = 0f,
             };
         }
 
@@ -736,6 +787,18 @@ public class ShellFireworkEffect : MonoBehaviour
         if (p.flashStrength > 0f && now < p.flashDuration)
             flash = p.flashStrength * (1f - now / p.flashDuration);
 
+        // 虹の位相。時間で回るのでここだけは毎フレーム読む必要があるが、
+        // 読むのはループの外で1回だけ（Instance の == は
+        // UnityEngine.Object のオーバーロードで、粒ごとに呼ぶと効いてくる）。
+        // モードの ON/OFF や彩度は _rainbow に固定してあるので、
+        // 飛行中に管理画面を触られても1発の見た目は最後まで変わらない
+        float huePhase = 0f;
+        if (_rainbow.Enabled)
+        {
+            var dop = DopamineModeController.Instance;
+            if (dop != null) huePhase = dop.HuePhase;
+        }
+
         for (int i = 0; i < _count; i++)
         {
             ref var g = ref _grains[i];
@@ -821,6 +884,25 @@ public class ShellFireworkEffect : MonoBehaviour
                 float k = Mathf.Clamp01((u - p.colorShiftAt) / p.colorShiftSpan);
                 col = Color.Lerp(g.colorA, g.colorB, k);
             }
+
+            // ── ドーパミンモードの虹色 ──
+            //   ここ（色が決まった直後）で差し込むのが要点。
+            //   この下の明滅・再点火・減衰・閃光はすべてアルファしか触らないので、
+            //   色相を置き換えてもそれらの設計はそのまま生きる。
+            //
+            //   RainbowTint.Replace は元の色の「最大成分」を明るさに使うので、
+            //   trailBrightness で暗くした尾は暗いまま、型ごとの明暗差も残る。
+            //   アルファも元のまま渡るので、減衰・明滅の計算は一切壊れない。
+            //
+            //   芯（Flash）だけは除外する。開花の一撃は白でなければ
+            //   「割れた瞬間の光」として読めないため（BuildGrains 側のコメント参照）。
+            //
+            // ⚠️ 型花火と昇りは Replace（色相を奪う）、画像花火だけは Rotate（色相を回す）。
+            //   この非対称は意図的で、揃えてはいけない。
+            //   Replace を投稿写真に掛けると絵の中の色の関係が全部消えて虹色の塊になる。
+            //   理由は ImageFireworkEffect.cs の該当箇所と RainbowTint.Rotate を参照
+            if (_rainbow.Enabled && g.role != Role.Flash)
+                col = RainbowTint.Replace(_rainbow, col, g.hue, huePhase);
 
             // ── 明滅 ──
             //

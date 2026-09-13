@@ -47,7 +47,13 @@ public static class FireworkSoundSynth
 {
     public const int SampleRate = 44100;
 
-    public enum SoundKind { Launch, Burst, Crackle }
+    // Chime / Jackpot はドーパミンモード（パチンコ演出）専用。
+    // 花火の物理を模したものではなく、「当たった」という合図を作るための音なので、
+    // 上の実測値に合わせる方針は適用しない（合わせる相手がそもそも花火ではない）。
+    // 焼いた wav の置き場所は
+    //   Assets/ARHanabi/Resources/Sfx/Launch/Dopamine/   … 先バレ音（Chime）
+    //   Assets/ARHanabi/Resources/Sfx/Burst/Dopamine/    … 大当たり音（Jackpot）
+    public enum SoundKind { Launch, Burst, Crackle, Chime, Jackpot }
 
     public sealed class Recipe
     {
@@ -295,11 +301,151 @@ public static class FireworkSoundSynth
         /// <summary>粒の衝撃波の時定数[秒]。大きいほど低域寄りになる</summary>
         public float popClickTStar   = 0.0016f;
 
+        // ══ 先バレ音（ベルの駆け上がり / SoundKind.Chime）══
+        //
+        // パチンコの「先バレ」＝ 当たりが確定したことを、玉が入るより先に知らせる音。
+        // ドーパミンモード中はこれが打ち上げ音の位置に入る。
+        //
+        // ── 音程を付ける（＝クラックルとは真逆の方針にする）理由 ──
+        //   クラックルでは「音程を付けたら電子音になった」と2度失敗しているが、
+        //   あれは火薬の破裂という自然音を作ろうとしていたから。
+        //   こちらは初めから人工物（遊技機の電子音）なので、はっきりした音程が正解。
+        //   むしろ音程が濁ると「壊れた音」に聞こえる。
+        //
+        // ── 層構成 ──
+        //   ベル（倍音の束） / 頭のキュッ（Friedlander） / きらめき（バンドパスノイズ）
+        //   RenderBurst と同じく、各層のピークを 1 に揃えてから gain で混ぜる。
+
+        /// <summary>基準の高さ[Hz]。880 = A5。これ以上低いと「重い」、高いと耳に刺さる</summary>
+        public float chimeBaseHz = 880f;
+
+        /// <summary>
+        /// 音の間隔[秒]。0.085 は 1秒あたり約12音で、人が「速い駆け上がり」と感じる下限あたり。
+        /// これより遅いとメロディに聞こえてしまい、「短い合図」ではなくなる。
+        /// </summary>
+        public float chimeStepSec = 0.085f;
+
+        /// <summary>
+        /// 基準音に対する各音の比＝長三和音（ド・ミ・ソ・ド・ミ）。
+        /// 1 : 1.25 : 1.5 は純正律の長三和音で、平均律より唸りが出ないぶん
+        /// 短い音でも和音として即座に読める。
+        /// 長調（明るい）であること自体が「当たり」の合図になるので、短三和音にはしない。
+        /// </summary>
+        public float[] chimeDegrees = { 1f, 1.25f, 1.5f, 2f, 2.5f };
+
+        /// <summary>
+        /// 各音の倍音比。整数倍ではなく、わずかに上へずらしてある。
+        /// 完全な整数倍はオルガンやシンセの音になる。実際の鐘・鉄琴は
+        /// 板の振動モードが整数倍から外れており、その「わずかなずれ」が金属感の正体。
+        /// ずらしすぎると不協和音になるので、+1〜+5% に留める。
+        /// </summary>
+        public float[] chimePartials = { 1f, 2.01f, 3.02f, 4.05f };
+
+        /// <summary>倍音の量。高次ほど小さく。1/n より少し急に落として金属の丸さを残す</summary>
+        public float[] chimePartialGains = { 1f, 0.45f, 0.24f, 0.13f };
+
+        /// <summary>
+        /// 高次倍音がどれだけ速く減衰するか（tau を 1/(1 + p·この値) にする）。
+        /// 実物の金属は高次から先に消えて、残るのは基音に近い成分だけ。
+        /// 0 にすると全倍音が同じ長さ残って、オルガンのような平板な持続音になる。
+        /// </summary>
+        public float chimePartialDamp = 0.55f;
+
+        /// <summary>途中の音の減衰[秒]。次の音と重なる長さにして和音として積み上げる</summary>
+        public float chimeNoteTau = 0.30f;
+
+        /// <summary>
+        /// 最後の音だけ長く残す[秒]。ここで「上りきった」と聞こえる。
+        /// 短いと駆け上がりが途中で切れて、合図ではなく事故に聞こえる。
+        /// </summary>
+        public float chimeLastTau = 0.34f;
+
+        /// <summary>
+        /// 最後の音だけピッチを上へ引っぱる量[セント]。700 = 完全5度。
+        /// 期待を上へ持っていったまま終わるのが「これから何か起きる」の合図になる。
+        /// 下げると解決してしまい、逆に「終わった」感じが出る。
+        /// </summary>
+        public float chimeBendCent = 700f;
+
+        /// <summary>引っぱりに掛ける時間[秒]。速すぎると効果音、遅すぎるとサイレンになる</summary>
+        public float chimeBendSec = 0.30f;
+
+        /// <summary>音の立ち上がり[秒]。ベルなので極めて短い</summary>
+        public float chimeAttack = 0.0015f;
+
+        /// <summary>
+        /// 音の頭の「キュッ」。Friedlander を極小 tStar で使う。
+        /// 正弦の束だけだと頭が丸く、打鍵の瞬間が聞こえない（＝「鳴った」の一撃が無い）。
+        /// tStar を 0.5ms 程度まで詰めると、低域に落ちず打撃音だけが残る。
+        /// </summary>
+        public float chimeClickTStar = 0.0005f;
+        public float chimeClickGain  = 0.30f;
+
+        /// <summary>ベル層の量。基準になるので通常 1 のまま</summary>
+        public float chimeGain = 1f;
+
+        /// <summary>
+        /// きらめき。7kHz 付近のバンドパスノイズを短く減衰させる。
+        /// 正弦の束は倍音が離散的なので、その隙間が「安っぽい合成音」に聞こえる。
+        /// 連続スペクトルを薄く敷くと隙間が埋まって、金属の表面が鳴っている質感になる。
+        /// Q を上げすぎると音程が付いて和音と喧嘩するので、緩めに通す。
+        /// </summary>
+        public float chimeSparkleHz  = 7000f;
+        public float chimeSparkleQ   = 1.1f;
+        public float chimeSparkleTau = 0.22f;
+        public float chimeSparkleGain = 0.16f;
+
+        // ══ 大当たり音（層の合成 / SoundKind.Jackpot）══
+        //
+        // 爆発（RenderBurst）＋ ファンファーレ（RenderChime）＋ ジャラジャラ（RenderCrackle）を
+        // 時間をずらして重ねる。RenderBurst が内部で衝撃波・突き・胴体・ゴロゴロを
+        // 層として積んでいるのと同じイディオムで、層の単位が「レシピ1本ぶん」に上がっただけ。
+        //
+        // ── 爆発を先頭（0秒）に置く理由 ──
+        //   この音は破裂音の位置に差し込まれる。いきなりファンファーレが鳴ると、
+        //   画面では花火が開いているのに音が鳴っていないように感じる（音と絵が別々に見える）。
+        //   先に「ドン」が来れば花火として読め、そのうえでファンファーレが乗る。
+        //   順番を入れ替えると、同じ素材でも「花火に音が付いていない」という壊れ方をする。
+        //
+        // ── ジャラジャラに音程を付けない ──
+        //   メダルの払い出し音は多数の金属片がぶつかる音で、音程感が無い。
+        //   RenderCrackle の popToneGain / popQ を上げると電子音・オルゴールになる
+        //  （火薬の粒で2回失敗した経緯が RenderCrackle のコメントに残っている）。
+        //   帯域だけ金属寄り（高め）に振り、Q は既定の緩いままにする。
+
+        /// <summary>爆発層を鳴らす時刻[秒]と量。0 = 先頭</summary>
+        public float jackpotBurstAt   = 0.00f;
+        public float jackpotBurstGain = 0.85f;
+
+        /// <summary>
+        /// ファンファーレ層の時刻[秒]と量。
+        /// 0.12 は爆発の頭（衝撃波）が通り過ぎた直後。完全に同時だと衝撃波にマスクされて
+        /// 和音の頭が聞こえず、離しすぎると「花火」と「当たり」が別々の出来事に分かれる。
+        /// </summary>
+        public float jackpotChimeAt   = 0.12f;
+        public float jackpotChimeGain = 1.0f;
+
+        /// <summary>
+        /// ジャラジャラ層の時刻[秒]・長さ[秒]・量。
+        /// 0.45 はファンファーレが登りきる頃。ここから払い出しが始まると
+        /// 「当たり → 出玉」の順に聞こえる。量を上げすぎると和音が埋もれる。
+        /// </summary>
+        public float jackpotCrackleAt   = 0.45f;
+        public float jackpotCrackleSec  = 1.50f;
+        public float jackpotCrackleGain = 0.55f;
+
         // ══ こだま・残響（null なら無効）══
         public float[] echoDelays = null;   // 秒
         public float[] echoGains  = null;   // 元音のピークに対する比
         /// <summary>反射1回目のカットオフ。2回目以降は 1/2, 1/3 … と下がる</summary>
         public float   echoCutoff = 1200f;
+
+        /// <summary>
+        /// 浅いコピー。RenderJackpot が層ごとに duration だけ違うレシピを作るために使う。
+        /// 配列（chimeDegrees / echoDelays など）は参照を共有するが、
+        /// レンダリングは配列を読むだけで書き換えないので問題にならない。
+        /// </summary>
+        public Recipe ShallowCopy() => (Recipe)MemberwiseClone();
     }
 
     // ── レンダリング ──
@@ -314,6 +460,8 @@ public static class FireworkSoundSynth
         {
             case SoundKind.Launch:  buf = RenderLaunch (r, n, ref rng); break;
             case SoundKind.Crackle: buf = RenderCrackle(r, n, ref rng); break;
+            case SoundKind.Chime:   buf = RenderChime  (r, n, ref rng); break;
+            case SoundKind.Jackpot: buf = RenderJackpot(r, n, ref rng); break;
             default:                buf = RenderBurst  (r, n, ref rng); break;
         }
 
@@ -610,6 +758,163 @@ public static class FireworkSoundSynth
         }
     }
 
+    // ── 先バレ音（ベルの駆け上がり）──
+    //
+    // 長三和音を速く駆け上がり、最後の音だけ上へ引っぱって終わる。
+    // 「上がりきらずに終わる」ことで、聞いた人の中で期待が上を向いたまま残る。
+    //
+    // 1音 = 倍音の束（わずかに非整数比）＋ 頭の Friedlander。
+    // そこに全体できらめき（バンドパスノイズ）を薄く敷く。
+    // RenderBurst と同じく、層のピークを 1 に揃えてから gain で混ぜるので
+    // gain がそのまま聞こえる比率になる。
+    private static float[] RenderChime(Recipe r, int n, ref AudioDsp.Rng rng)
+    {
+        var bells   = new float[n];
+        var clicks  = new float[n];
+        var sparkle = new float[n];
+
+        var degrees  = (r.chimeDegrees      != null && r.chimeDegrees.Length      > 0)
+                       ? r.chimeDegrees      : new[] { 1f };
+        var partials = (r.chimePartials     != null && r.chimePartials.Length     > 0)
+                       ? r.chimePartials     : new[] { 1f };
+        var pGains   = (r.chimePartialGains != null) ? r.chimePartialGains : new[] { 1f };
+
+        // 最後の音の引っぱり先（セント → 周波数比）
+        float bendMul = (float)Math.Pow(2.0, r.chimeBendCent / 1200.0);
+
+        for (int k = 0; k < degrees.Length; k++)
+        {
+            int start = (int)(k * r.chimeStepSec * SampleRate);
+            if (start >= n) break;
+
+            bool  last = (k == degrees.Length - 1);
+            float f0   = r.chimeBaseHz * degrees[k];
+            float tau  = last ? r.chimeLastTau : r.chimeNoteTau;
+            int   len  = n - start;
+
+            // 倍音ごとに別々に積む。位相も減衰も倍音ごとに違うのが鐘の要点で、
+            // 1本の波形に足し込んでから一括で減衰させると「同じ音色の和音」になってしまう
+            for (int p = 0; p < partials.Length; p++)
+            {
+                float g = p < pGains.Length ? pGains[p] : 0f;
+                if (g <= 0f) continue;
+
+                // 高次ほど速く消える。これが無いとオルガンのような平板な持続音になる
+                float pTau = tau / (1f + p * r.chimePartialDamp);
+
+                double phase = 0.0;
+                for (int j = 0; j < len; j++)
+                {
+                    float lt = j / (float)SampleRate;
+
+                    // 最後の音だけ上へ引っぱる。LogSweep は u01 を内部でクランプするので
+                    // chimeBendSec を過ぎたあとは引っぱり切った高さで伸び続ける
+                    float f = last
+                              ? AudioDsp.LogSweep(f0, f0 * bendMul, lt / r.chimeBendSec)
+                              : f0;
+
+                    phase += 2.0 * Math.PI * (f * partials[p]) / SampleRate;
+
+                    bells[start + j] += (float)Math.Sin(phase)
+                                      * AudioDsp.AttackDecay(lt, r.chimeAttack, pTau) * g;
+                }
+            }
+
+            // 頭の「キュッ」。極小 tStar の Friedlander は低域にほとんど落ちず、
+            // 打鍵の瞬間だけが残る
+            for (int j = 0; j < len; j++)
+                clicks[start + j] += AudioDsp.Friedlander(j / (float)SampleRate, r.chimeClickTStar);
+        }
+
+        // きらめき。倍音の隙間を連続スペクトルで埋めて「安っぽい合成音」を消す
+        var sp = new AudioDsp.Biquad();
+        sp.SetBandpass(r.chimeSparkleHz, r.chimeSparkleQ, SampleRate);
+
+        for (int i = 0; i < n; i++)
+        {
+            float t = i / (float)SampleRate;
+            sparkle[i] = sp.Process(rng.NextBipolar())
+                       * AudioDsp.AttackDecay(t, 0.01f, r.chimeSparkleTau);
+        }
+
+        AudioDsp.NormalizePeak(bells,   1f);
+        AudioDsp.NormalizePeak(clicks,  1f);
+        AudioDsp.NormalizePeak(sparkle, 1f);
+
+        var buf = new float[n];
+        AudioDsp.AddScaled(buf, bells,   r.chimeGain);
+        AudioDsp.AddScaled(buf, clicks,  r.chimeClickGain);
+        AudioDsp.AddScaled(buf, sparkle, r.chimeSparkleGain);
+        return buf;
+    }
+
+    // ── 大当たり音 ──
+    //
+    // 爆発 → ファンファーレ → ジャラジャラ を時間差で重ねる。
+    // RenderBurst が衝撃波・突き・胴体・ゴロゴロを層として積んでいるのと同じ作法で、
+    // 層の単位が「レシピ1本ぶんのレンダリング結果」に上がっただけ。
+    // 各層はピークを 1 に揃えてから gain で混ぜるので、gain がそのまま比率になる。
+    //
+    // ここで RenderBurst / RenderChime / RenderCrackle をそのまま呼べるのは、
+    // Recipe が全カテゴリのフィールドを1つのクラスに持っているから。
+    // つまり大当たり音の調整は、既存の burst_* / crackle_* と同じつまみで行える。
+    private static float[] RenderJackpot(Recipe r, int n, ref AudioDsp.Rng rng)
+    {
+        var buf = new float[n];
+
+        // ① 爆発。まず花火として読めるようにするため必ず先頭に置く
+        int burstAt = (int)(Math.Max(0f, r.jackpotBurstAt) * SampleRate);
+        if (burstAt < n)
+        {
+            var burst = RenderBurst(r, n - burstAt, ref rng);
+            AudioDsp.NormalizePeak(burst, 1f);
+            AddAt(buf, burst, burstAt, r.jackpotBurstGain);
+        }
+
+        // ② ファンファーレ。衝撃波が通り過ぎた直後に重ねる
+        int chimeAt = (int)(Math.Max(0f, r.jackpotChimeAt) * SampleRate);
+        if (chimeAt < n)
+        {
+            var chime = RenderChime(r, n - chimeAt, ref rng);
+            AudioDsp.NormalizePeak(chime, 1f);
+            AddAt(buf, chime, chimeAt, r.jackpotChimeGain);
+        }
+
+        // ③ ジャラジャラ（出玉）。
+        //    RenderCrackle は房の発生時刻を r.duration に対して決めるので、
+        //    そのまま渡すと粒が大当たり音の全長に薄く散ってしまう
+        //   （しかも尻尾の粒は範囲外として黙って捨てられ、密度だけが下がる）。
+        //    duration だけ差し替えた浅いコピーを渡して、この層の中に収める
+        int crackleAt = (int)(Math.Max(0f, r.jackpotCrackleAt) * SampleRate);
+        if (crackleAt < n && r.jackpotCrackleGain > 0f)
+        {
+            var cr = r.ShallowCopy();
+            cr.duration = r.jackpotCrackleSec;
+
+            int len = Math.Min(n - crackleAt, (int)(r.jackpotCrackleSec * SampleRate));
+            if (len > 0)
+            {
+                var crackle = RenderCrackle(cr, len, ref rng);
+                AudioDsp.NormalizePeak(crackle, 1f);
+                AddAt(buf, crackle, crackleAt, r.jackpotCrackleGain);
+            }
+        }
+
+        return buf;
+    }
+
+    // 指定サンプル位置から層を足し込む。
+    // AudioDsp.AddScaled は先頭合わせしかできないので、時間差で重ねるぶんはここで面倒を見る
+    private static void AddAt(float[] dst, float[] src, int offset, float gain)
+    {
+        for (int i = 0; i < src.Length; i++)
+        {
+            int idx = offset + i;
+            if (idx >= dst.Length) break;
+            dst[idx] += src[i] * gain;
+        }
+    }
+
     // ── こだま・残響 ──
     // 遅延させた減衰コピーを重ねる。反射を重ねるごとにカットオフを下げて
     // 「遠くから返ってくる」感じにする。
@@ -722,8 +1027,10 @@ public static class FireworkSoundSynth
     }
 
     // ── 生成セット ──
-    // 4カテゴリ（開花 / 打ち上げ / パチパチ / こだま）を聞き比べられる10本。
-    // 数値を変えて FireworkSoundBaker のメニューを再実行すれば作り直せる。
+    // 花火そのものの4カテゴリ（開花 / 打ち上げ / パチパチ / こだま）に加えて、
+    // 末尾にドーパミンモード専用の2本（先バレ音 / 大当たり音）が入っている。
+    // 数値を変えて FireworkSoundBaker のメニューを再実行すれば作り直せる
+    //（Baker はこのリストを回すだけなので、足した分は自動で焼かれる。Baker 側の変更は不要）。
     public static List<Recipe> DefaultSet()
     {
         return new List<Recipe>
@@ -858,6 +1165,63 @@ public static class FireworkSoundSynth
                 popDensityCurve = 1.1f,
                 popClusterMin = 1, popClusterMax = 3,
                 popInClusterMin = 0.003f, popInClusterMax = 0.014f,
+            },
+
+            // ── ドーパミンモード: 先バレ音 ──
+            //
+            // 焼いたあとの置き場所:
+            //   Assets/ARHanabi/Resources/Sfx/Launch/Dopamine/dopamine_sakibare_01.wav
+            // （FireworkAudioPlayer.LaunchOverrideDir = "Dopamine" がこのフォルダを引く）
+            //
+            // ── duration を 0.95 にしている理由 ──
+            //   この音は打ち上げ音の位置で鳴り、そのあと昇り時間を置いて大当たり音が続く。
+            //   昇り時間は FireworkLauncher.RiseSecondsMax = 0.72 秒が上限なので、
+            //   尺がそれより短いと「先バレ音が鳴り終わって無音 → 大当たり音」となり、
+            //   ひと続きの演出ではなく別々の2発に聞こえてしまう。
+            //   0.72 を確実に跨ぐ長さにして、鳴り終わる前に次が来るようにしてある。
+            //   （通常の打ち上げ笛が 0.9〜1.5 秒なのも同じ理由）
+            new Recipe {
+                name = "dopamine_sakibare_01", kind = SoundKind.Chime, seed = 4001u,
+                duration = 0.95f,
+                // 残響は薄く。屋外の反射を足す程度に留める。
+                // 深く掛けると和音が濁って、駆け上がりの段が数えられなくなる
+                reverbMix = 0.12f, reverbRoomSec = 0.7f, reverbDamp = 0.5f,
+            },
+
+            // ── ドーパミンモード: 大当たり音 ──
+            //
+            // 焼いたあとの置き場所:
+            //   Assets/ARHanabi/Resources/Sfx/Burst/Dopamine/dopamine_jackpot_01.wav
+            // （FireworkAudioPlayer.BurstOverrideDir = "Dopamine" がこのフォルダを引く。
+            //   型ごとのサブフォルダは不要。どの型でも画像花火でもこの1本が鳴るのが仕様）
+            new Recipe {
+                name = "dopamine_jackpot_01", kind = SoundKind.Jackpot, seed = 4101u,
+                duration = 2.2f,
+                reverbMix = 0.14f,
+
+                // ① 爆発層。小玉寄りの短く締まった「ドン」にする。
+                //    大玉のように尾を引かせると、直後のファンファーレが胴体に埋もれる
+                shockTStar = 0.0018f, shockGain = 0.80f,
+                thumpFreqFrom = 160f, thumpFreqTo = 60f, thumpSweepSec = 0.12f,
+                thumpTau = 0.16f, thumpGain = 0.90f,
+                bodyCutFrom = 6000f, bodyCutTo = 1600f, bodyCutSec = 0.20f,
+                bodyTau = 0.20f, bodyGain = 0.75f,
+                rumbleCut = 2000f, rumbleTau = 0.40f, rumbleGain = 0.25f,
+
+                // ③ ジャラジャラ層（メダルの払い出し）。
+                //    火薬のパチパチより帯域を高く・粒を細かくすると金属がぶつかる音に寄る。
+                //    popToneGain = 0 を明示しているのは意思表示。ここを上げると
+                //    「ポーン」という電子音・オルゴールになる（RenderCrackle のコメント参照）。
+                //    低域の芯（popClickGain）も薄くする。芯は①の爆発が既に担っているので、
+                //    ここで足すと払い出しが「小さな爆発の連射」になってしまう
+                popCount = 90,
+                popFreqMin = 3500f, popFreqMax = 11000f, popQ = 1.5f,
+                popToneGain = 0f,
+                popTauMin = 0.008f, popTauMax = 0.030f,
+                popClickGain = 0.10f, popBodyGain = 0.25f,
+                popDensityCurve = 1.15f,               // ほぼ一様＝出玉が途切れずに続く
+                popClusterMin = 1, popClusterMax = 4,
+                popInClusterMin = 0.004f, popInClusterMax = 0.020f,
             },
         };
     }
