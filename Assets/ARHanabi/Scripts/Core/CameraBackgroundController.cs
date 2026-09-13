@@ -381,12 +381,20 @@ public class CameraBackgroundController : MonoBehaviour
                 // 映像が来なかった index は保存しない（次の起動でまた同じ外れを引かせない）
                 SettingsStore.SetBool(OpenInProgressKey, false);
                 Debug.LogError($"[CameraBG] '{device.name}' が {openTimeoutSeconds} 秒以内に映像を返しませんでした。" +
-                               "別の index を試してください");
+                               "デバイスは閉じました。別の index を試してください");
                 yield break;
             }
 
             // ここまで来たら「本当に映像が来ている」と確認できたので、初めて index を保存する。
             //
+
+                // ── 諦めるときは必ずデバイスを閉じる ──
+                //   ここで Stop() せずに抜けていたため、映像を返さないデバイスを掴んだまま
+                //   放置され、画面には何も映らないのにカメラのLEDだけ点きっぱなしになっていた。
+                //   さらに Update() の自動再開は isPlaying が true（映像は来ないが再生中）なので
+                //   介入せず、次に切り替えるまで永久にデバイスを占有し続けていた
+                ReleaseWebCamTexture();
+
             // ── 以前は開く前に保存していた（事故の原因）──
             //   開いた瞬間にプロセスが即死するデバイスがあると、死ぬ前に保存された index が
             //   次の起動でも使われ、起動するたびに即死する無限ループになっていた。
