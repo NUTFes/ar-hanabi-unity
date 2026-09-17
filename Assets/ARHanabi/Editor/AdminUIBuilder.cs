@@ -23,7 +23,7 @@ using UnityEngine.UI;
 //   ┌─────────────────────────────────────────────────────────┐
 //   │ Header      花火管理                          [終了][閉じる] │
 //   ├─────────────────────────────────────────────────────────┤
-//   │ TabBar      [基本][宇宙モード][検出の調整]      全12件 / 有効8件 │
+//   │ TabBar  [基本][宇宙モード][検出の調整][花火の型][体験][ドーパミン] 全12件/有効8件 │
 //   ├─────────────────────────────────────────────────────────┤
 //   │ TabContent  TabBasicPage / TabSpacePage / TabTunePage の   │
 //   │             どれか1つだけを SetActive(true) して見せる         │
@@ -92,12 +92,26 @@ public static class AdminUIBuilder
     private const float SliderBarH       = 40f;   // スライダー本体（トラック＋ハンドル）
     private const float SliderHandleW    = 28f;   // マウスでつまめる最低限の幅
 
-    // 「検出の調整」タブのグリッドのセル幅。
-    // GridLayoutGroup はセルを自動で伸縮しないので実寸で持つしかない。
-    // Canvas の参照解像度 1920 − パネル左右padding(24*2) = 1872 に
-    // 3列 + 列間 12*2 を収める（600*3 + 24 = 1824）
-    private const float TuneCellWidth    = 600f;
-    private const float TuneGridSpacing  = 12f;
+    // スライダーグリッドの列間と、1ページぶんの有効幅。
+    //
+    // GridLayoutGroup はセルを自動で伸縮しないので、セル幅は実寸で持つしかない。
+    // ただし実寸を列数ごとに定数で持つと「列数を変えたのに幅を直し忘れて右がはみ出す」
+    // という壊れ方をするので、列数から SliderCellWidth() で機械的に出す。
+    //
+    // Canvas の参照解像度 1920 − パネル左右padding(24*2) = 1872 が実際の幅だが、
+    // 端数やフォント幅で1pxでも溢れると右端が切れて見えるので 1860 に抑えてある
+    //（「花火の型」タブのセル幅 300*6 + 12*5 = 1860 と同じ考え方・同じ数字）。
+    private const float TuneGridSpacing   = 12f;
+    private const float PageContentWidth  = 1860f;
+
+    // 「検出の調整」タブは3列、「ドーパミン」タブのスライダーは4列。
+    // 列数はページごとに違うので定数で持ち、BuildSliderGridPage へ渡す
+    private const int   TuneColumns       = 3;
+    private const int   DopamineColumns   = 4;
+
+    // 列数からセル幅を出す。列間は (columns - 1) 本
+    private static float SliderCellWidth(int columns) =>
+        (PageContentWidth - TuneGridSpacing * (columns - 1)) / Mathf.Max(1, columns);
 
     // 「花火の型」タブのグリッド。型名は短い（菊 / 型物・ハート / UFO円盤）ので
     // 検出の調整タブより細かく割る。SliderCellWidth() と同じ考え方で
@@ -115,6 +129,10 @@ public static class AdminUIBuilder
         "TabTuneButton",
         "TabShellButton",
         "TabExperienceButton",
+        // 6枚目。ドーパミンモード（虹色・大当たり音・検出ゆるめ）のマスターと個別スイッチ。
+        // タブが1枚増えても右端の件数表示（EntryCountText）が潰れないことは確認済み
+        //（見積もりは BuildTabBar のコメント参照）
+        "TabDopamineButton",
     };
 
     // 「基本」タブ（横1行）。当日いちばん触るものだけを置く。
@@ -160,6 +178,22 @@ public static class AdminUIBuilder
         "EnsembleButton",
     };
 
+    // 「ドーパミン」タブのボタン行（横1行）。
+    // 宇宙モードタブ・体験タブと完全に同じ構造（マスター1個＋個別スイッチ、
+    // マスターOFF中も個別設定は保持）。3つ目のモードだが新しい作法は持ち込まない。
+    //
+    // ── なぜ基本タブに混ぜないか ──
+    //   基本タブは「当日いちばん触るもの」で既に8個並んでいる。そこへマスターを置くと、
+    //   テスト打上を押そうとした指の流れで展示全体の検出を最小に落とす事故が起きうる。
+    //   タブを1枚挟むこと自体が、意図しない ON を防ぐ摩擦として働く。
+    private static readonly string[] TabDopamineButtonOrder =
+    {
+        "DopamineButton",
+        "DopamineRainbowButton",
+        "DopamineSfxButton",
+        "DopamineDetectButton",
+    };
+
     // 「検出の調整」タブに並べるスライダー。3列×2行のグリッドにこの順で入る。
     //
     // ── なぜボタンからスライダーに変えたか ──
@@ -202,6 +236,26 @@ public static class AdminUIBuilder
         new SliderSpec("MaxPeople",  "同時に検出する人数  5人",             1f,     10f,  true),
     };
 
+    // 「ドーパミン」タブに並べるスライダー。4列×1行のグリッドにこの順で入る。
+    //
+    // ⚠️ ここの3本（DopaCooldown / DopaHandUp / DopaJump）は
+    //    「検出の調整」タブの Cooldown / HandUp / Jump とは別の値。
+    //    ドーパミンモードは通常の保存値を書き換えず、モード中だけこちらを読む
+    //    （DopamineModeController 冒頭の「上書きして戻す、を一切やらない」を参照）。
+    //    Key の接頭辞を Dopa にしてあるのは、GameObject 名がぶつかると
+    //    FindDescendant がどちらを拾うか分からなくなるため。
+    //
+    // 上下限は DopamineModeController の [Range] と一致させてある。
+    // 片方だけ広げると、スライダーでは入るのに setter 側で丸められて
+    // 「動かしたのに戻る」という挙動になる
+    private static readonly SliderSpec[] DopamineSliders =
+    {
+        new SliderSpec("HueSpeed",     "色相が回る速さ  0.35周/秒",        0f,    3f, false),
+        new SliderSpec("DopaCooldown", "連発防止  0.0秒",                 0f,    2f, false),
+        new SliderSpec("DopaHandUp",   "手上げのきびしさ  0.15（肩幅比）", 0.05f, 1f, false),
+        new SliderSpec("DopaJump",     "ジャンプの高さ  0.12（肩幅比）",   0.05f, 1f, false),
+    };
+
     // タブごとの1行ヘルプ。TabHelpText の初期値に使う。
     // 実行中の切り替えは AdminUIManager が行うので、同じ文言を向こうにも持っている
     // （文言を直すときは admin-ui-contract.md の表と両方を揃えること）
@@ -240,12 +294,22 @@ public static class AdminUIBuilder
         { "ComboTrailButton",   "コンボの光跡 [ON]" },
         { "EnsembleButton",     "いっしょに [ON]" },
 
+        // ドーパミンタブ
+        // マスターだけ [OFF] 始まりなのは、DopamineModeController が
+        // 毎起動マスターを OFF に落とす（ONのまま翌日の開場を迎える事故を防ぐ）ため。
+        // 個別スイッチは復元されるので、既定値と同じ [ON] を置いておく
+        { "DopamineButton",        "ドーパミン [OFF]" },
+        { "DopamineRainbowButton", "虹色の花火 [ON]" },
+        { "DopamineSfxButton",     "大当たり音 [ON]" },
+        { "DopamineDetectButton",  "検出をゆるめる [ON]" },
+
         // タブ行・ヘッダー・パネル外
         { "TabBasicButton",      "基本" },
         { "TabSpaceButton",      "宇宙モード" },
         { "TabTuneButton",       "検出の調整" },
         { "TabShellButton",      "花火の型" },
         { "TabExperienceButton", "体験" },
+        { "TabDopamineButton",   "ドーパミン" },
         { "QuitButton",          "終了" },
         { "CloseButton",         "閉じる" },
         { "OpenTabButton",       "開く" },
@@ -606,6 +670,7 @@ public static class AdminUIBuilder
         var tunePage       = FindOrCreateChild(tabContent, "TabTunePage",       log);
         var shellPage      = FindOrCreateChild(tabContent, "TabShellPage",      log);
         var experiencePage = FindOrCreateChild(tabContent, "TabExperiencePage", log);
+        var dopaminePage   = FindOrCreateChild(tabContent, "TabDopaminePage",   log);
 
         basicPage     .SetSiblingIndex(0);
         spacePage     .SetSiblingIndex(1);
@@ -619,6 +684,7 @@ public static class AdminUIBuilder
         BuildTunePage(tunePage, log);
         BuildShellPage(shellPage, log);
         BuildButtonRow(panel, experiencePage, TabExperienceButtonOrder, log);
+        BuildDopaminePage(panel, dopaminePage, log);
 
         // Editor で開いたときに何も見えないと壊れて見えるので、
         // 既定で「基本」タブを開いた状態にしておく。
@@ -704,8 +770,15 @@ public static class AdminUIBuilder
     //
     // HorizontalLayoutGroup を2つ入れ子にするのではなく GridLayoutGroup にしたのは、
     // ブロックの幅を全部同じにしたいため（数値がタブの中で縦に揃って読める）。
-    // GridLayoutGroup はセルを自動で伸縮しないので、幅は TuneCellWidth の実寸で持つ
-    private static void BuildTunePage(Transform page, StringBuilder log)
+    //
+    // ── なぜ「検出の調整」専用ではなく一般化してあるか ──
+    //   ドーパミンタブは「ボタン行＋スライダー」の混在ページで、スライダー側だけは
+    //   検出の調整タブと全く同じ見た目にしたい。ここを専用のままにすると、
+    //   グリッドの組み立てがもう1か所に複製され、セル幅や行高の直し忘れが必ず起きる。
+    //   受け取るのは「並べるもの（specs）」と「何列か（columns）」だけで、
+    //   セル幅・行数・高さはそこから機械的に出す。
+    private static void BuildSliderGridPage(Transform page, SliderSpec[] specs, int columns,
+                                            StringBuilder log)
     {
         // 横1行のページと違い HorizontalLayoutGroup が残っていると競合するので落とす
         var strayLayout = page.GetComponent<HorizontalLayoutGroup>();
@@ -733,7 +806,52 @@ public static class AdminUIBuilder
         for (int i = 0; i < specs.Length; i++)
             BuildSliderBlock(page, specs[i], i, log);
 
-        log.AppendLine($"  TabTunePage に {TuneSliders.Length} 個のスライダーを配置");
+        log.AppendLine($"  {page.name} に {specs.Length} 個のスライダーを配置（{columns}列 {rows}行）");
+    }
+
+    // 「ドーパミン」ページ。ボタン行とスライダーグリッドを縦に並べる。
+    //
+    // ── なぜページ自身が TabContent と同じ形（縦積み）なのか ──
+    //   他のページは「ボタン1行だけ」か「スライダーの格子だけ」で、器が1つで足りていた。
+    //   ドーパミンだけは両方を載せるが、HorizontalLayoutGroup と GridLayoutGroup を
+    //   1つの GameObject に同居させることはできない（互いに子のアンカーを奪い合う。
+    //   BottomRow で一度やらかしている）。
+    //   そこでページ自身は縦に積むだけの器にして、中身は既存の
+    //   BuildButtonRow / BuildSliderGridPage をそのまま子へ適用する。
+    //   これは TabContent が複数のページを縦に持つのと同じ形で、新しい考え方ではない。
+    private static void BuildDopaminePage(Transform panel, Transform page, StringBuilder log)
+    {
+        // 以前このページが単独のボタン行／グリッドだった場合に残る器を落とす。
+        // ページ自身は縦積みしかしないので、横並び・格子はどちらも邪魔になる
+        var strayHorizontal = page.GetComponent<HorizontalLayoutGroup>();
+        if (strayHorizontal != null) Undo.DestroyObjectImmediate(strayHorizontal);
+        var strayGrid = page.GetComponent<GridLayoutGroup>();
+        if (strayGrid != null) Undo.DestroyObjectImmediate(strayGrid);
+
+        var layout = GetOrAdd<VerticalLayoutGroup>(page.gameObject);
+        layout.padding                = new RectOffset(0, 0, 0, 0);
+        layout.spacing                = TuneGridSpacing;
+        layout.childAlignment         = TextAnchor.UpperCenter;
+        layout.childControlWidth      = true;
+        layout.childControlHeight     = true;
+        layout.childForceExpandWidth  = true;
+        layout.childForceExpandHeight = false;
+
+        // 高さは固定しない。中の2つ（ボタン行・スライダーグリッド）がそれぞれ
+        // 自分の高さを申告するので、VerticalLayoutGroup がその合計を親へ伝える。
+        // ここで固定すると、スライダーを増やしても最終行がページの外へ出てしまう
+        // （TabContent 自身がこれと同じ形・同じ理由で高さを持たない）
+        ClearFixedHeight(page);
+
+        var buttonRow  = FindOrCreateChild(page, "DopamineButtonRow",  log);
+        var sliderGrid = FindOrCreateChild(page, "DopamineSliderGrid", log);
+        buttonRow .SetSiblingIndex(0);
+        sliderGrid.SetSiblingIndex(1);
+
+        // マスターを含むボタン行が上。数値は「ONにしたときにどう振る舞うか」の
+        // 調整なので、どちらが先に目に入るべきかで並び順を決めている
+        BuildButtonRow(panel, buttonRow, TabDopamineButtonOrder, log);
+        BuildSliderGridPage(sliderGrid, DopamineSliders, DopamineColumns, log);
     }
 
     // スライダー1個ぶんのブロックを組む。
@@ -1264,6 +1382,7 @@ public static class AdminUIBuilder
         AssignButton(so, panel, "TabTuneButton",       "tabTuneButton",       "tabTuneText",       log);
         AssignButton(so, panel, "TabShellButton",      "tabShellButton",      "tabShellText",      log);
         AssignButton(so, panel, "TabExperienceButton", "tabExperienceButton", "tabExperienceText", log);
+        AssignButton(so, panel, "TabDopamineButton",   "tabDopamineButton",   "tabDopamineText",   log);
         Assign(so, "entryCountText", FindComponent<TextMeshProUGUI>(panel, "EntryCountText"), log);
 
         // ページそのもの（Manager が SetActive で1つだけ見せる）
@@ -1272,6 +1391,7 @@ public static class AdminUIBuilder
         Assign(so, "tabTunePage",       FindDescendant(panel, "TabTunePage"),       log);
         Assign(so, "tabShellPage",      FindDescendant(panel, "TabShellPage"),      log);
         Assign(so, "tabExperiencePage", FindDescendant(panel, "TabExperiencePage"), log);
+        Assign(so, "tabDopaminePage",    FindDescendant(panel, "TabDopaminePage"),    log);
 
         Assign(so, "tabHelpText", FindComponent<TextMeshProUGUI>(panel, "TabHelpText"), log);
         Assign(so, "statusText",  FindComponent<TextMeshProUGUI>(panel, "StatusText"),  log);
@@ -1299,6 +1419,12 @@ public static class AdminUIBuilder
         AssignButton(so, panel, "ComboTrailButton",  "comboTrailButton",  "comboTrailText",  log);
         AssignButton(so, panel, "EnsembleButton",    "ensembleButton",    "ensembleText",    log);
 
+        // ── ドーパミンタブ ──
+        AssignButton(so, panel, "DopamineButton",        "dopamineButton",        "dopamineText",        log);
+        AssignButton(so, panel, "DopamineRainbowButton", "dopamineRainbowButton", "dopamineRainbowText", log);
+        AssignButton(so, panel, "DopamineSfxButton",     "dopamineSfxButton",     "dopamineSfxText",     log);
+        AssignButton(so, panel, "DopamineDetectButton",  "dopamineDetectButton",  "dopamineDetectText",  log);
+
         // ── 検出の調整タブ ──
         // GameObject 名（HandUpSlider / HandUpLabel）と フィールド名（handUpSlider /
         // handUpText）は先頭1文字の大小しか違わないので、TuneSliders から機械的に導く。
@@ -1306,7 +1432,14 @@ public static class AdminUIBuilder
         // 黙って null が入る、という失敗が起きない
         AssignSliders(so, panel, TuneSliders, log);
 
-        // 行の親は Viewport > Content
+        // ── ドーパミンタブのスライダー ──
+        // 名前の導き方は上と全く同じ（HueSpeedSlider → hueSpeedSlider）なので、
+        // 同じ関数へ表を渡すだけで済む
+        AssignSliders(so, panel, DopamineSliders, log);
+
+        // 行の親は Viewport > Content。
+        // ⚠️ 名前が "Content" ちょうどの子孫を深さ優先で拾うので、他所に "Content" を
+        //    作らないこと（検知ログ側を GestureLogContent という名前にしてあるのはこのため）
         var content = FindDescendant(panel, "Content");
         if (content != null)
             Assign(so, "entryListContent", content, log);

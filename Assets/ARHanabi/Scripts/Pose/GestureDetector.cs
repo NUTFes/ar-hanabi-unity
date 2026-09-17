@@ -52,6 +52,52 @@ using Mediapipe.Tasks.Components.Containers;
 // ── 手上げの閾値も見直した（体験設計）──
 //   handUpThreshold の実効値（シーン保存値 1.0）は「手首が肩より肩幅1つ分上」を
 //   要求しており、腕の短い子どもには物理的に届きにくい。既定を 0.5（肩幅の半分）に緩める。
+//
+// ── そのあと「緩めすぎ」を締め直した（この回の変更）──
+//   現場で「ジャンプでも手上げでもない動きでぽんぽん打ち上がる」「ジャンプで
+//   上げている感が薄い」という状態になった。原因は3つあり、順に効き目が大きい。
+//
+//     1. 見えていない関節の座標をそのまま使っていた
+//        MediaPipe は関節が画面外でも隠れていても必ず座標を返し、確からしさは
+//        visibility にしか出ない。手首が画面外に出たときの推測座標が肩より上に
+//        来ると、手を上げていないのに手上げになる。カメラに近い子どもで頻発する。
+//        → landmarkVisibility で、見えていない関節を使う判定を行わないようにした。
+//
+//     2. クールダウンをフレームの先頭で1回しか見ていなかった
+//        ジャンプ判定 → 手上げ判定 の順に走るので、両手を上げながら跳ねると
+//        同じフレームで両方成立し、1回のジェスチャーで花火が余分に上がっていた。
+//        → 発射の直前に見る（CanFire）。1フレーム1発が構造的に保証される。
+//
+//     3. ジャンプの条件が跳ねていなくても満たせた
+//        足首が見えないとチェックを丸ごと飛ばしていた（カメラに近いと足首は
+//        画面外に出るので、いちばん緩い経路がいちばん起きやすかった）。
+//        腰は歩く・しゃがむ・近づくだけでも動くので、これだけでは足りない。
+//        → 高さ・速さ・足首の追随・連続フレーム数の4つで締める。
+//
+//   ⚠️ 締めるときは「閾値を上げる」より先に 1 を疑うこと。
+//      閾値を上げると本物のジェスチャーまで通らなくなるが、
+//      信頼度で弾くのは偽物にしか効かない（本物の通しやすさは変わらない）。
+//
+// ── ドーパミンモード中は「読む先」が変わる ──
+//   DopamineModeController.LooseDetectionEnabled が true の間だけ、
+//   判定は下の [SerializeField] ではなくモード側が持つもう1組の値を読む。
+//   対象は 手上げ閾値 / ジャンプ高さ / クールダウン / 保持時間 /
+//   片手の追加保持 / ジャンプ再武装 の6つで、すべて Eff〜 プロパティに集約してある。
+//   判定もフィードバック配信も必ず Eff〜 を通すこと（下の「嘘の見た目」の注意を参照）。
+//
+//   ⚠️ landmarkVisibility と minShoulderWidth だけは緩めない（理由は各プロパティのコメント）。
+//
+// ── なぜ「モードONの間だけフィールドを上書きして、OFFで戻す」方式にしなかったのか ──
+//   この2つの値は Admin 画面から調整され、PlayerPrefs に保存されて
+//   複数日の展示をまたいで引き継がれる（下の「永続化」参照）。
+//   上書き方式だと、ONのまま電源が落ちた／アプリが落ちた翌日、
+//   緩めきった値が「保存された既定値」として残ったまま開場することになる。
+//   しかもその状態は見た目に出ないので、現場では原因を特定しようがない。
+//
+//   「戻す処理」が存在する限り、戻し忘れと戻す前に落ちる事故は必ず起こりうる。
+//   そこで保存値には最後まで一切触れず、読む瞬間に選ぶだけにした。
+//   戻す処理が無ければ、その事故は原理的に起きない。
+//   （同じ判断が DopamineModeController の冒頭にも書いてある）
 
 public class GestureDetector : MonoBehaviour
 {
@@ -277,6 +323,16 @@ public class GestureDetector : MonoBehaviour
                   $"片手 {poseHoldDuration + oneHandExtraHold:F2}秒 / " +
                   $"猶予 {holdGraceDuration:F2}秒 / 連発防止 {gestureCooldown:F2}秒");
         Debug.Log($"[Gesture] 閾値（肩幅比） 手上げ {handUpThreshold:F2} / ジャンプの高さ {jumpRiseThreshold:F2}");
+        Debug.Log($"[Gesture] 誤検出の除外 関節の信頼度 {landmarkVisibility:F2}以上 / " +
+                  $"肩幅 {minShoulderWidth:F2}以上 / " +
+                  $"ジャンプは足首が腰の {AnkleRiseRatio:F2} 倍以上上がること" +
+                  $"（足首が見えないときは腰の必要量を {JumpNoAnkleRiseMultiplier:F2} 倍に割増）");
+
+        // 上の2行は「保存値」であって、常にこの値で判定されるとは限らない。
+        // ドーパミンモード中だけ DopamineModeController 側の緩めた値に切り替わるので、
+        // 現場で「ログの閾値と体感が合わない」となったときに真っ先に疑えるよう書いておく
+        Debug.Log("[Gesture] 上記は通常時の値です。ドーパミンモード（検出ゆるめ）中は " +
+                  "DopamineModeController の緩和値が使われます（保存値は書き換わりません）");
     }
 
     // ── Admin画面（SETTINGS）からの調整用 ──
@@ -306,6 +362,64 @@ public class GestureDetector : MonoBehaviour
         get => poseHoldDuration;
         set { poseHoldDuration = value; SettingsStore.SetFloat($"{nameof(GestureDetector)}.{nameof(poseHoldDuration)}", value); }
     }
+
+    // ── 実効値プロパティ層 ──
+    //
+    // 判定に使う値は必ずここを通す。上の保存値（[SerializeField] + Admin の setter）は
+    // ドーパミンモードが何をしても書き換わらない。読む瞬間にどちらを見るかが変わるだけ。
+    //
+    // ── なぜ毎回引くのか（キャッシュしないのか）──
+    //   Admin 画面のトグルは判定の実行中（＝お客さんが目の前でポーズを取っている最中）に
+    //   押される。イベントで配って各所にキャッシュさせると、配り漏れた場所だけが
+    //   古い値のまま動き、「ONにしたのにジャンプだけ緩くならない」類の症状になる。
+    //   1フレームあたり数回の分岐で済む値なので、毎回引くほうが確実。
+    //
+    // ── Instance が null でも動くこと ──
+    //   DopamineModeController は RuntimeInitializeOnLoadMethod で自動生成されるが、
+    //   生成前の1フレームや、テスト・シーン単体再生では null になりうる。
+    //   その場合は常に保存値側（＝通常の判定）に倒れる。
+    private static DopamineModeController Dopa => DopamineModeController.Instance;
+    private static bool Loose => Dopa != null && Dopa.LooseDetectionEnabled;
+
+    private float EffHandUpThreshold   => Loose ? Dopa.RelaxHandUpThreshold   : handUpThreshold;
+    private float EffJumpRiseThreshold => Loose ? Dopa.RelaxJumpRiseThreshold : jumpRiseThreshold;
+    private float EffGestureCooldown   => Loose ? Dopa.RelaxCooldown          : gestureCooldown;
+    private float EffPoseHoldDuration  => Loose ? Dopa.RelaxPoseHold          : poseHoldDuration;
+    private float EffOneHandExtraHold  => Loose ? Dopa.RelaxOneHandExtraHold  : oneHandExtraHold;
+
+    // JumpRearmSeconds は Admin に出していない private const（定数側のコメントに
+    // 「着地のバウンドを2回目のジャンプとして拾わないため」という理由が書いてある）。
+    // const のまま残し、非上書き側でそれを返す
+    private float EffJumpRearmSeconds  => Loose ? Dopa.RelaxJumpRearm         : JumpRearmSeconds;
+
+    // ── ⚠️ landmarkVisibility と minShoulderWidth には実効値層を作らない ──
+    //
+    //   この2つは「閾値」ではなく「そもそもこの関節・この検出を信用してよいか」の足切り。
+    //   緩める対象の6つが「どれくらいの動きでジェスチャーとみなすか」を決めているのに対し、
+    //   こちらは「その座標が実在の人のものか」を決めている。意味の階層が違う。
+    //
+    //   ここを 0 に振ると、MediaPipe が画面外・隠れた関節に対して返す推測座標や、
+    //   背景に小さく映り込んだ人の揺れがそのまま判定に流れ込む。結果として、
+    //   誰もポーズを取っていない（極端には誰も居ない）のに花火が上がり続ける。
+    //
+    //   ドーパミンモードは「振り切った気持ちよさ」のための飛び道具だが、その気持ちよさは
+    //   「自分がやったから上がった」という因果が成立していることの上に乗っている。
+    //   勝手に上がる花火は、緩いのではなく壊れている。どれだけ振り切っても
+    //   この因果だけは壊してはいけない、というのがここを緩めない理由。
+    //
+    //   緩めたくなったら、判定側ではなくカメラの位置・画角を疑うこと。
+
+    // ── Admin 画面用の公開 API ──
+    // Admin は保存値（上の setter 付きプロパティ）をスライダーで編集しつつ、
+    // ドーパミンモード中は「実際にはこの値で判定されている」をラベルに併記する。
+    // これが無いと、モード中にスライダーを動かしても挙動が変わらないように見えてしまう
+
+    /// <summary>ドーパミンモードの制限解除が効いているか。Admin がラベルに実効値を併記するために読む</summary>
+    public bool  DetectionOverridden        => Loose;
+    public float EffectiveHandUpThreshold   => EffHandUpThreshold;
+    public float EffectiveJumpRiseThreshold => EffJumpRiseThreshold;
+    public float EffectiveGestureCooldown   => EffGestureCooldown;
+    public float EffectivePoseHoldDuration  => EffPoseHoldDuration;
 
     // ── 人ごとの判定状態 ──
     private class PersonState
@@ -382,9 +496,29 @@ public class GestureDetector : MonoBehaviour
         // ── 肩幅を基準にスケールを計算 ──
         float shoulderWidth = Mathf.Abs(leftShoulder.x - rightShoulder.x);
 
-        // 閾値を肩幅に対する相対値で計算
-        float dynamicHandUpThreshold = shoulderWidth * handUpThreshold;
-        float dynamicJumpThreshold   = shoulderWidth * jumpRiseThreshold;
+        // 小さすぎる（＝遠い、または検出が不安定な）人は判定に使わない。
+        // 閾値がすべて肩幅比なので、小さいほど絶対量としての閾値が小さくなり、
+        // ランドマークの揺れだけで条件を満たしてしまう
+        if (shoulderWidth < minShoulderWidth)
+        {
+            LogSkipped($"P{personIndex} 肩幅 {shoulderWidth:F3} が下限 {minShoulderWidth:F3} 未満", now);
+            return;
+        }
+
+        // 肩・腰が見えていない検出はそもそも判定に使わない。
+        // これらは手上げ・ジャンプの両方で基準に使うので、ここで一括して弾く
+        if (!IsVisible(leftShoulder) || !IsVisible(rightShoulder) ||
+            !IsVisible(leftHip)      || !IsVisible(rightHip))
+        {
+            LogSkipped($"P{personIndex} 肩または腰の信頼度が下限 {landmarkVisibility:F2} 未満", now);
+            return;
+        }
+
+        // 閾値を肩幅に対する相対値で計算。
+        // ドーパミンモード中はここで引かれる値だけが緩い方に差し替わる
+        //（肩幅で正規化する構造自体は変えない。緩めても「遠い人ほど絶対量が小さい」は正しい）
+        float dynamicHandUpThreshold = shoulderWidth * EffHandUpThreshold;
+        float dynamicJumpThreshold   = shoulderWidth * EffJumpRiseThreshold;
 
         // 毎フレーム × 人数分出るので Verbose
         ArLog.Verbose($"[Pose] P{personIndex} shoulderWidth={shoulderWidth:F3} " +
@@ -442,32 +576,16 @@ public class GestureDetector : MonoBehaviour
                 && (!ankleVisible || PassesAnkleCheck(state, now, ankleY, rise))
                 && CanFire(state, now))
             {
-                float rise = baseline - hipY;
-
-                // 地面付近にいる間は基準時刻を更新し続ける。閾値を超えた瞬間、
-                // この時刻からの経過時間が「立ち上がりの速さ」になる
-                if (rise <= dynamicJumpThreshold * JumpGroundedRiseRatio || state.jumpGroundedTime < 0f)
-                    state.jumpGroundedTime = now;
-
-                bool fastEnough = (now - state.jumpGroundedTime) <= JumpAscentSecondsMax;
-
-                // 毎フレーム出るので Verbose（実機での符号確認・閾値調整用）
-                ArLog.Verbose($"[Pose] P{personIndex} 腰baseline={baseline:F3} hipY={hipY:F3} " +
-                              $"rise={rise:F3} th={dynamicJumpThreshold:F3} fast={fastEnough}");
-
-                if (state.jumpArmed && rise > dynamicJumpThreshold && fastEnough
-                    && PassesAnkleCheck(state, now, leftAnkle, rightAnkle, ankleY, rise))
-                {
-                    FireGesture(personIndex, GestureType.Jump, screenPos, state);
-                    state.jumpArmed     = false;
-                    state.jumpFiredTime = now;
-                }
-                else if (!state.jumpArmed
-                         && rise < dynamicJumpThreshold * JumpGroundedRiseRatio
-                         && (now - state.jumpFiredTime) >= JumpRearmSeconds)
-                {
-                    state.jumpArmed = true;
-                }
+                FireGesture(personIndex, GestureType.Jump, screenPos, state);
+                state.jumpArmed      = false;
+                state.jumpFiredTime  = now;
+                state.jumpRiseFrames = 0;
+            }
+            else if (!state.jumpArmed
+                     && rise < requiredRise * JumpGroundedRiseRatio
+                     && (now - state.jumpFiredTime) >= EffJumpRearmSeconds)
+            {
+                state.jumpArmed = true;
             }
         }
 
@@ -535,9 +653,9 @@ public class GestureDetector : MonoBehaviour
 
             float heldDuration = now - state.bothHandsUpStartTime;
             // ポーズを維持している間ずっと出るので Verbose
-            ArLog.Verbose($"[Pose] P{personIndex} 両手上げ中: {heldDuration:F2}秒 / {poseHoldDuration}秒");
+            ArLog.Verbose($"[Pose] P{personIndex} 両手上げ中: {heldDuration:F2}秒 / {EffPoseHoldDuration}秒");
 
-            if (heldDuration >= poseHoldDuration && !state.bothHandsFired && canFire)
+            if (heldDuration >= EffPoseHoldDuration && !state.bothHandsFired && CanFire(state, now))
             {
                 FireGesture(personIndex, GestureType.BothHandsUp, screenPos, state);
                 state.bothHandsFired = true;
@@ -560,7 +678,7 @@ public class GestureDetector : MonoBehaviour
 
             // 片手だけは両手が揃うのを待つ余地を作るために少し長く保持させる
             //（oneHandExtraHold のコメント参照）
-            float oneHandHold  = poseHoldDuration + Mathf.Max(0f, oneHandExtraHold);
+            float oneHandHold  = EffPoseHoldDuration + Mathf.Max(0f, EffOneHandExtraHold);
             float heldDuration = now - state.oneHandUpStartTime;
             // ポーズを維持している間ずっと出るので Verbose
             ArLog.Verbose($"[Pose] P{personIndex} 片手上げ中: {heldDuration:F2}秒 / {oneHandHold}秒");
@@ -585,28 +703,36 @@ public class GestureDetector : MonoBehaviour
         // 優先順位は Cooldown > Charging > Idle。
         // クールダウン中は canFire が false で実際には発射できないため、
         // 保持中の見た目を出すと「溜まっているのに撃てない」という嘘になる。
+        //
+        // ⚠️ ここも必ず Eff〜（実効値）で割ること。
+        //   見た目の進捗と発射条件は同じ分母でなければならない。保存値のまま残すと、
+        //   ドーパミンモード中だけ「ゲージは満タンなのに撃てない」（保存値のほうが緩い場合）／
+        //   「一瞬で撃つのにゲージが追いつかない」（モードのほうが緩い＝通常こちら）という、
+        //   判定は正しいのに見た目だけが嘘をつく状態になる。
+        //   溜めゲージは「あと何秒で上がるか」を伝える部品なので、ここが嘘だと
+        //   モードの緩さが体感として伝わらないどころか、操作感が壊れて見える
         var feedback = new PoseFeedback { trackId = personIndex };
 
         if (!CanFire(state, now))
         {
             feedback.state    = PoseFeedbackState.Cooldown;
-            feedback.progress = gestureCooldown <= 0f
+            feedback.progress = EffGestureCooldown <= 0f
                 ? 0f
-                : 1f - Mathf.Clamp01((now - state.lastGestureTime) / gestureCooldown);
+                : 1f - Mathf.Clamp01((now - state.lastGestureTime) / EffGestureCooldown);
         }
         else if (state.bothHandsUpStartTime >= 0f)
         {
             feedback.state    = PoseFeedbackState.Charging;
             feedback.gesture  = GestureType.BothHandsUp;
-            feedback.progress = poseHoldDuration <= 0f
+            feedback.progress = EffPoseHoldDuration <= 0f
                 ? 1f
-                : Mathf.Clamp01((now - state.bothHandsUpStartTime) / poseHoldDuration);
+                : Mathf.Clamp01((now - state.bothHandsUpStartTime) / EffPoseHoldDuration);
         }
         else if (state.oneHandUpStartTime >= 0f)
         {
             // 片手側は実効保持時間（保持時間 + 片手の追加保持）で割る。
             // 発射条件と同じ分母にしないと、進捗が満タンなのに撃たない状態ができる
-            float oneHandHold = poseHoldDuration + Mathf.Max(0f, oneHandExtraHold);
+            float oneHandHold = EffPoseHoldDuration + Mathf.Max(0f, EffOneHandExtraHold);
 
             feedback.state    = PoseFeedbackState.Charging;
             feedback.gesture  = GestureType.OneHandUp;
@@ -621,6 +747,54 @@ public class GestureDetector : MonoBehaviour
 
         PoseEventBus.Instance?.ReportFeedback(feedback);
     }
+
+    // ── 判定に使わなかった検出の通知（間引き）──
+    //
+    // ── 完全に無音にはしない ──
+    //   信頼度・肩幅で弾くのは「反応しない」方向の失敗なので、黙って捨てると
+    //   現場では原因不明の不調にしか見えない（閾値を厳しくしすぎたのか、
+    //   カメラが映っていないのか、区別がつかない）。
+    //   毎フレーム × 人数分そのまま出すとログが埋まるので、秒単位に間引く。
+    //   AR_VERBOSE_LOG を定義すれば、間引き前の毎フレームの値も見られる
+    private const float SkipLogIntervalSeconds = 3f;
+    private float _lastSkipLogTime = -999f;
+
+    private void LogSkipped(string reason, float now)
+    {
+        ArLog.Verbose($"[Pose] {reason} のため判定しません");
+
+        if (now - _lastSkipLogTime < SkipLogIntervalSeconds) return;
+        _lastSkipLogTime = now;
+
+        Debug.Log($"[Gesture] {reason} のため判定から除外しました" +
+                  "（誰も反応しないときは landmarkVisibility / minShoulderWidth を下げる）");
+    }
+
+    // ── 発射できるか（クールダウン）──
+    //
+    // ⚠️ 必ず「発射する直前」に呼ぶこと。
+    //   以前はフレームの先頭で1回だけ計算した bool をジャンプ判定・手上げ判定の
+    //   両方で使い回していた。FireGesture が lastGestureTime を更新しても
+    //   その bool は false にならないので、両手を上げながら跳ねると
+    //   Jump と BothHandsUp が同じフレームで両方発火し、花火が余分に上がっていた。
+    //   毎回ここを通せば、先に成立したほうだけが撃ち、もう一方は
+    //   クールダウンで確実に落ちる（1フレーム1発が構造的に保証される）
+    //
+    // ドーパミンモード中はクールダウンが 0 まで落ちうるが、ここは `>` で比較しているので
+    // 0 でも「同じフレームで2発」にはならない（now - lastGestureTime が 0 のため）。
+    // 1フレーム1発の保証は閾値ではなく比較の向きが担保している
+    private bool CanFire(PersonState state, float now)
+        => (now - state.lastGestureTime) > EffGestureCooldown;
+
+    // ── ランドマークが信用できるか ──
+    //
+    // MediaPipe は関節が画面外・隠れている場合でも座標を返し、確からしさは
+    // visibility にだけ現れる。visibility を見ずに座標を使うと、
+    // 「推測で置かれた手首」で手上げ判定が通ってしまう。
+    // visibility が null の実装・モデルもあるため、その場合は見えている扱いにする
+    //（従来の足首チェックと同じ方針）
+    private bool IsVisible(NormalizedLandmark landmark)
+        => (landmark.visibility ?? 1f) >= landmarkVisibility;
 
     // ── 履歴の更新 ──
     // 今回のサンプルを積み、JumpBaselineWindowSeconds を超えて古いものを取り除く。
@@ -739,7 +913,14 @@ public class GestureDetector : MonoBehaviour
 
         PoseEventBus.Instance.FireGesture(personIndex, gesture, screenPos);
 
-        // gestureCooldown が効くので低頻度。運用上必要なログなので常時出す
-        Debug.Log($"[Gesture] Person{personIndex}: {gesture}");
+        // クールダウンが効くので低頻度。運用上必要なログなので常時出す。
+        // 前回発火からの間隔も出す（クールダウンが効いているかをログだけで確認できる）。
+        //
+        // ⚠️ 実効値を出すこと。保存値を出すと、ドーパミンモード中に
+        //   「連発防止 2.00秒」と書きながら 0.1秒間隔で発火しているログが並び、
+        //   クールダウンが壊れているようにしか読めなくなる。
+        //   モード中はその旨も添えて、ログだけで原因の切り分けができるようにする
+        Debug.Log($"[Gesture] Person{personIndex}: {gesture}（前回発火から {sinceText} / " +
+                  $"連発防止 {EffGestureCooldown:F2}秒{(Loose ? "・ドーパミンモード" : "")}）");
     }
 }

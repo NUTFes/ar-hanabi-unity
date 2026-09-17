@@ -154,6 +154,32 @@ public class ImageFireworkEffect : MonoBehaviour
     private float[]                   _fallDelay;
     private float[]                   _flickerPhase;
 
+    // ── ドーパミンモード（虹色）──
+    //
+    // ⚠️ ここだけ型花火・昇りと設計が違う。あちらは RainbowTint.Replace（色相を奪う）、
+    //   画像花火は RainbowTint.Rotate（元の彩度と明度を残して色相だけ回す）。
+    //   Replace を投稿写真に掛けると、絵の中の色の関係（肌と空と服の差）が
+    //   まとめて消えて虹色の塊になり、写真が写真でなくなる。
+    //   逆に型花火を Rotate にすると、元が単色なので「1発1色が少し回る」だけで虹にならない。
+    //   片方だけ見て「揃っていない」と直すと、どちらかの絵が壊れる。
+    //   対になる説明は ShellFireworkEffect.cs / LaunchTrailEffect.cs の Replace 呼び出し箇所と
+    //   RainbowTint.Rotate にある。
+    //
+    // 元の色を HSV に分解して持つ。寿命のあいだ元の色は変わらないので、
+    // Launch で1回だけ分解すれば毎フレームの RGBToHSV（分岐と除算を含む）が丸ごと消える。
+    // 彩度は持ち上げ済みの値を入れてある（下の ImageSaturationLift の説明を参照）。
+    // モード OFF のときは確保しない（通常運用で 2000要素 × 3本を無駄に抱えないため）
+    private RainbowTint.Settings _rainbow;
+    private float[]              _hue;
+    private float[]              _sat;
+    private float[]              _val;
+
+    // 粒の位置から作る色相オフセットの大きさ。
+    // 粒ごとのランダムなオフセットは足さない（絵の中の色の関係が壊れて絵が読めなくなる）。
+    // 代わりに絵の対角方向に沿ってなだらかに色相をずらすと、
+    // 絵の形はそのままに虹が斜めに流れていくように見える
+    private const float HueBandScale = 0.35f;
+
     private ParticleSystem _ps;
     private Material       _material;
     private int            _count;
@@ -197,6 +223,15 @@ public class ImageFireworkEffect : MonoBehaviour
             return;
         }
 
+        // ── モードは1発につき1回だけスナップショットする ──
+        //   1. 飛んでいる最中に管理画面で OFF にされた玉が途中で色を失うと「バグに見える」。
+        //      1発は最後まで同じモードで飛びきるべき
+        //   2. Instance != null は UnityEngine.Object の == オーバーロード
+        //      （ネイティブ側への問い合わせを含む）。粒ごとに呼ぶと実測できる負荷になる
+        //   時間で回る位相（HuePhase）だけは Update() のループの外で1回読む。
+        //   PrepareMaterial が _Intensity を書き込むので、その前に取る
+        _rainbow = RainbowTint.Settings.Capture();
+
         if (!PrepareMaterial())
         {
             Destroy(gameObject);
@@ -238,6 +273,14 @@ public class ImageFireworkEffect : MonoBehaviour
         _fallDelay    = new float[_count];
         _flickerPhase = new float[_count];
 
+        // 虹色のときだけ HSV の3配列を確保する（OFF の通常運用では確保しない）
+        if (_rainbow.Enabled)
+        {
+            _hue = new float[_count];
+            _sat = new float[_count];
+            _val = new float[_count];
+        }
+
         float life     = TotalLifetime + 1f;
         float scatter  = scatterMode ? imageScale * scatterAmount : 0f;
 
@@ -263,6 +306,21 @@ public class ImageFireworkEffect : MonoBehaviour
 
             _targets[i]    = target;
             _baseColors[i] = p.ToColor32();
+
+            // ---- 虹色用に元の色を HSV へ分解しておく ----
+            // 元の色は寿命のあいだ変わらないので、毎フレーム分解する必要が無い。
+            //
+            // 彩度の持ち上げもここで済ませる。白飛びした肌や紙は彩度がほぼ0で、
+            // 色相をいくら回しても白のままなので、少しだけ色を乗せて虹が乗るようにする。
+            // 上げすぎると元の明暗だけが残った塗り絵になるので、
+            // 持ち上げ量は管理画面（ImageSaturationLift）から詰められるようにしてある
+            if (_rainbow.Enabled)
+            {
+                Color.RGBToHSV(_baseColors[i], out float h, out float s, out float v);
+                _hue[i] = h;
+                _sat[i] = Mathf.Lerp(s, 1f, _rainbow.ImageSaturationLift);
+                _val[i] = v;
+            }
 
             // ---- 落下と拡散（速度ではなく加速度で与える）----
             // 外向き成分は「中心からの距離に比例」させる。全粒に同じ大きさを
@@ -344,9 +402,13 @@ public class ImageFireworkEffect : MonoBehaviour
         _material = new Material(shader) { name = $"ImageFX_{shader.name}" };
 
         // フォールバックの ParticleUnlit / ParticleColor にはこのプロパティが無いが、
-        // SetFloat は存在しないプロパティに対して何もしないので分岐は不要
+        // SetFloat は存在しないプロパティに対して何もしないので分岐は不要。
+        //
+        // 虹色のときは底上げする。彩度を上げると輝度が落ちるため、
+        // 同じ _Intensity のままだとモード中だけ絵が暗く沈んで見える
+        float boost = _rainbow.Enabled ? _rainbow.IntensityBoost : 1f;
         _material.SetFloat(Shader.PropertyToID("_Intensity"),
-                           Mathf.Max(0.01f, emissiveIntensity));
+                           Mathf.Max(0.01f, emissiveIntensity) * boost);
 
         Debug.Log($"[ImageFX] Using shader: {shader.name}");
         return true;
@@ -422,6 +484,19 @@ public class ImageFireworkEffect : MonoBehaviour
         float fadeStart    = expandTime + settleTime;
         float invFadeTime  = 1f / Mathf.Max(0.01f, fadeTime);
 
+        // 虹の位相。時間で回るのでここだけは毎フレーム読むが、ループの外で1回だけ。
+        // モードの ON/OFF や彩度の持ち上げ量は Launch 時に固定してあるので、
+        // 飛行中に管理画面を触られても1発の見た目は最後まで変わらない
+        float huePhase = 0f;
+        if (_rainbow.Enabled)
+        {
+            var dop = DopamineModeController.Instance;
+            if (dop != null) huePhase = dop.HuePhase;
+        }
+
+        // 色相オフセットを絵の座標から作るための正規化係数（下の斜めの帯に使う）
+        float invImageScale = 1f / Mathf.Max(0.01f, imageScale);
+
         for (int i = 0; i < _count; i++)
         {
             // ---- 落下＋拡散の加速度を滑らかに立ち上げる ----
@@ -464,10 +539,38 @@ public class ImageFireworkEffect : MonoBehaviour
             // 元のアルファを維持して掛ける（白粒子の whiteAlpha を潰さないため）
             float alpha = c.a / 255f * ratio * flicker;
 
-            _buf[i].startSize         = _particleSize * sizeRatio;
-            _buf[i].startColor        = new Color32(
-                c.r, c.g, c.b,
-                (byte)Mathf.Clamp(Mathf.RoundToInt(alpha * 255f), 0, 255));
+            _buf[i].startSize = _particleSize * sizeRatio;
+
+            if (_rainbow.Enabled)
+            {
+                // ── 色相だけを回す（Rotate）──
+                //   粒ごとのランダムなオフセットは足さない。足すと絵の中の色の関係が
+                //   壊れて、何が写っているのか読めなくなる。
+                //   代わりに粒の位置（絵の左下→右上）からなだらかなオフセットを作ると、
+                //   絵の形はそのままに虹が斜めに流れていくように見える。
+                //   位置は _targets に入っている（拡散の変位を足す前の、絵としての座標）
+                //   0..1 に収めてから掛ける。RainbowTint の表引きは
+                //   「渡る色相は必ず 0 以上」を前提に剰余を & で取っているので、
+                //   負の値を渡してはいけない（scatterMode で絵の外へ飛んだ粒がいるため
+                //   Clamp01 も掛ける）
+                var   local = _targets[i] - _origin;
+                float band  = Mathf.Clamp01(((local.x + local.y) * invImageScale + 1f) * 0.5f)
+                            * HueBandScale;
+
+                var rc = RainbowTint.Rotate(_rainbow, _hue[i], _sat[i], _val[i],
+                                            band, huePhase);
+
+                // Rotate の出力は最大成分が _val[i]（元の明度）を超えないので、
+                // Color → Color32 の暗黙変換でクランプは起きない
+                _buf[i].startColor = new Color(rc.r, rc.g, rc.b, alpha);
+            }
+            else
+            {
+                _buf[i].startColor = new Color32(
+                    c.r, c.g, c.b,
+                    (byte)Mathf.Clamp(Mathf.RoundToInt(alpha * 255f), 0, 255));
+            }
+
             _buf[i].remainingLifetime = life;
         }
 

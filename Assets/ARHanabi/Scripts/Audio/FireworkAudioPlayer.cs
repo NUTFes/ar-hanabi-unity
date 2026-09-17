@@ -62,6 +62,14 @@ using UnityEngine;
 //   AudioVariant を空のままにしておけば、誰も宇宙モードに触れていない今までの
 //   経路と完全に同じになる（挙動が変わらないことを保証するための既定値）。
 //
+// ── ドーパミンモードの「上書き」（LaunchOverrideDir / BurstOverrideDir）──
+//   AudioVariant が「型の差を保ったまま鳴らし分ける」軸なのに対して、
+//   こちらは「型の差を消して必ず同じ音を鳴らす」軸。向きが逆なので別の仕組みにしてある。
+//   詳しい理由は LaunchOverrideDir の直前のコメントを参照。
+//     Sfx/Launch/Dopamine/  … 先バレ音（打ち上げ音を上書き）
+//     Sfx/Burst/Dopamine/   … 大当たり音（破裂音を上書き。型も画像花火も区別しない）
+//   どちらも空文字が既定で、空なら従来の経路と完全に同じ。
+//
 // ── 3D定位のためにモノラル素材が必要 ──
 //   Unity は spatialBlend > 0 でもステレオ素材だと定位が効かない。
 //   素材はモノラルに変換しておくこと（Import 設定の Force To Mono でも可）。
@@ -91,6 +99,46 @@ public class FireworkAudioPlayer : MonoBehaviour
     /// 順で探す。SpaceModeController が音のON/OFFを切り替えるときにこれを書き換えるだけでよい。
     /// </summary>
     public string AudioVariant { get; set; } = "";
+
+    // ── 「上書き」の軸（ドーパミンモードの先バレ音・大当たり音）──
+    //
+    // ⚠️ これは AudioVariant とは別の軸であり、意図して別にしてある。
+    //
+    //   AudioVariant は「モードごとに、型の差を保ったまま鳴らし分ける」ための軸。
+    //   宇宙モードでも菊は菊の音、牡丹は牡丹の音で鳴る（Space/<soundKey>/ という
+    //   1段深い階層がまさにそれを表している）。
+    //
+    //   ドーパミンの大当たり音はその逆で、「どの型でも画像花火でも必ず同じ音」で
+    //   あること自体が演出になる。毎回同じ音だからこそ「当たった」の合図として働く。
+    //   パチンコの大当たり音が機種の中で1種類しか無いのと同じ理由。
+    //
+    //   これを AudioVariant に乗せると、
+    //     ・Sfx/Burst/Dopamine/{Kiku,Botan,Yanagi,…}/ に同じ wav を12個複製する羽目になる
+    //     ・しかも型を1つ足した人が、そのフォルダを作り忘れた瞬間に静かに大当たり音を失う
+    //       （共通プールへフォールバックして「通常の爆発音」が鳴るだけなので、
+    //        エラーも警告も出ず、気づけない壊れ方をする）
+    //   ので、soundKey を一切参照しない「上書き」として独立させている。
+    //
+    //   空文字なら何も起きない（既定）。つまり誰もドーパミンモードに触れていない限り、
+    //   従来の経路と1バイトも変わらない。
+    //
+    //   素材の置き場所:
+    //     Assets/ARHanabi/Resources/Sfx/Launch/Dopamine/   … 先バレ音
+    //     Assets/ARHanabi/Resources/Sfx/Burst/Dopamine/    … 大当たり音
+    //   （FireworkSoundSynth の dopamine_sakibare_01 / dopamine_jackpot_01 を
+    //    FireworkSoundBaker で焼いて、この2フォルダへコピーする）
+
+    /// <summary>
+    /// 空でなければ Sfx/Launch/&lt;この値&gt;/ の音で打ち上げ音を上書きする。
+    /// そのフォルダが無い／空なら黙って従来の経路へ落ちる。
+    /// </summary>
+    public string LaunchOverrideDir { get; set; } = "";
+
+    /// <summary>
+    /// 空でなければ Sfx/Burst/&lt;この値&gt;/ の音で破裂音を上書きする（型も画像花火も区別しない）。
+    /// そのフォルダが無い／空なら黙って従来の経路へ落ちる。
+    /// </summary>
+    public string BurstOverrideDir { get; set; } = "";
 
     // Resources 配下の読み込み先。フォルダに置くだけで音が増える
     private const string LaunchDir  = "Sfx/Launch";
@@ -207,6 +255,14 @@ public class FireworkAudioPlayer : MonoBehaviour
     // キーは AudioVariant の値そのもの（例: "Space"）
     private readonly Dictionary<string, List<AudioClip>> _launchByKey  = new();
 
+    // 上書き（LaunchOverrideDir / BurstOverrideDir）用のキャッシュ。
+    // _burstByKey / _launchByKey と共用せず別に持っているのは、キーの意味が違うため。
+    // 向こうは soundKey（型）や "<AudioVariant>/<soundKey>" が入るので、
+    // 同じ辞書に "Dopamine" を混ぜると「Dopamine という名前の型」と区別が付かなくなる。
+    // 辞書を分けておけば、将来どちらの軸に何を足しても衝突しない
+    private readonly Dictionary<string, List<AudioClip>> _launchByOverride = new();
+    private readonly Dictionary<string, List<AudioClip>> _burstByOverride  = new();
+
     private bool _warnedNoBurst;
 
     // ── ライフサイクル ──
@@ -305,9 +361,11 @@ public class FireworkAudioPlayer : MonoBehaviour
     /// </summary>
     public void PlayLaunch(Vector3 worldPosition)
     {
-        var clips = ResolveLaunchClips();
+        var clips = ResolveLaunchClips(out bool overridden);
         if (clips.Count == 0) return;   // 素材が無いだけなので警告は出さない
-        PlayOne(clips, worldPosition, launchVolume, 1f, 0f);
+
+        // 上書き経路（先バレ音）はゆらぎを切る。理由は PlayOne の jitter 引数のコメント参照
+        PlayOne(clips, worldPosition, launchVolume, 1f, 0f, jitter: !overridden);
     }
 
     // AudioVariant（宇宙モードなど）が設定されていれば Sfx/Launch/<AudioVariant>/ を
@@ -315,8 +373,20 @@ public class FireworkAudioPlayer : MonoBehaviour
     // soundKey のような型ごとの分岐は無いので、GetByKey には AudioVariant 自体を
     // “キー”として渡すだけでよい（GetByKey は文字列を1つ受け取ってフォルダを引くだけの
     // 汎用処理なので、そのまま使い回せる）
-    private List<AudioClip> ResolveLaunchClips()
+    private List<AudioClip> ResolveLaunchClips(out bool overridden)
     {
+        // ── 上書き（ドーパミンの先バレ音）は最優先 ──
+        // AudioVariant より先に見るのは、「どのモードのどの型でも必ず同じ合図が鳴る」
+        // のが上書きの目的だから。宇宙モードと同時にONでも先バレ音が勝つのが正しい。
+        // 素材が無ければ overridden を立てずに従来の経路へ落ちる（行き止まりを作らない）
+        if (!string.IsNullOrEmpty(LaunchOverrideDir))
+        {
+            var ov = GetByKey(_launchByOverride, LaunchDir, LaunchOverrideDir);
+            if (ov != null && ov.Count > 0) { overridden = true; return ov; }
+        }
+
+        overridden = false;
+
         if (string.IsNullOrEmpty(AudioVariant)) return _launch;
 
         var variant = GetByKey(_launchByKey, LaunchDir, AudioVariant);
@@ -341,7 +411,7 @@ public class FireworkAudioPlayer : MonoBehaviour
                           string soundKey = null, float delay = 0f, float volumeScale = 1f,
                           float crackleDelayOverride = -1f)
     {
-        var clips = ResolveBurstClips(kind, soundKey);
+        var clips = ResolveBurstClips(kind, soundKey, out bool overridden);
 
         if (clips.Count == 0)
         {
@@ -355,9 +425,23 @@ public class FireworkAudioPlayer : MonoBehaviour
         }
 
         float volume = (isLarge ? burstVolumeLarge : burstVolumeSmall) * volumeScale;
-        float pitch  = isLarge ? 1f : burstPitchSmall;
 
-        PlayOne(clips, worldPosition, volume, pitch, delay);
+        // ── 上書き中は小玉のピッチ上げを掛けない ──
+        //   burstPitchSmall は 1.18 = 約3半音。片手上げ（小玉）のときだけ
+        //   ファンファーレが3半音上がって鳴ることになり、和音そのものが別の調に飛ぶ。
+        //   「毎回まったく同じ音が鳴る」ことが大当たりの合図なので、ここは固定する。
+        //   通常の破裂音では「小さい玉は高く鳴る」が物理的に正しいので、そちらは従来どおり。
+        float pitch = (overridden || isLarge) ? 1f : burstPitchSmall;
+
+        PlayOne(clips, worldPosition, volume, pitch, delay, jitter: !overridden);
+
+        // ── 上書き中はパチパチ層を重ねない ──
+        //   大当たり音は wav の中に既にジャラジャラ（メダルの払い出し）を含んでいる。
+        //   その上に Sfx/Crackle/ の火薬のパチパチが重なると、狙った音像が濁る。
+        //   今は Sfx/Crackle/ 配下が空なので実害はゼロだが、将来「柳の落ち音を復活させよう」と
+        //   誰かが wav を置いた瞬間にドーパミンモードだけが静かに壊れる。
+        //   壊れる条件を先に潰しておく（後から気づくのは難しい種類のバグなので）
+        if (overridden) return;
 
         // 開花のあと、星が拡散し始める頃にパチパチ／落下音を重ねる。
         // 型専用のパチパチが無ければ共通プールにフォールバックする
@@ -381,8 +465,22 @@ public class FireworkAudioPlayer : MonoBehaviour
     // Sfx/Burst/<AudioVariant>/<soundKey>/ を試す（3段フォールバックの1段目）。
     // 見つからなければ従来の Sfx/Burst/<soundKey>/ → 共通プールの順（2・3段目）に
     // そのまま流れる。行き止まりを作らないのはこのファイル全体の方針と同じ
-    private List<AudioClip> ResolveBurstClips(FireworkKind kind, string soundKey)
+    private List<AudioClip> ResolveBurstClips(FireworkKind kind, string soundKey,
+                                              out bool overridden)
     {
+        // ── 上書き（ドーパミンの大当たり音）は最優先 ──
+        // Image の早期 return より前に置いてあるのが要点。
+        // 画像花火だけ大当たり音が鳴らないと「当たりの条件」が分からなくなるので、
+        // 上書きは kind も soundKey も一切見ない。
+        // 素材が無ければ overridden を立てずに従来の3段フォールバックへそのまま落ちる
+        if (!string.IsNullOrEmpty(BurstOverrideDir))
+        {
+            var ov = GetByKey(_burstByOverride, BurstDir, BurstOverrideDir);
+            if (ov != null && ov.Count > 0) { overridden = true; return ov; }
+        }
+
+        overridden = false;
+
         if (kind == FireworkKind.Image) return _image;
 
         if (!string.IsNullOrEmpty(AudioVariant) && !string.IsNullOrEmpty(soundKey))
@@ -415,8 +513,23 @@ public class FireworkAudioPlayer : MonoBehaviour
     }
 
     // ── 共通の再生処理 ──
+    //
+    // jitter: ピッチ・音量のゆらぎを掛けるか。既定 true（＝従来の挙動そのまま。
+    //         既存の呼び出しは1文字も変えなくてよい）。
+    //
+    // ── なぜ bool なのか（「ゆらぎ量」の数値フィールドにしない理由）──
+    //   ここで区別したいのは「量」ではなく種類。
+    //     ゆらぎを掛けてよい音 … 爆発音・笛。実物が毎回違うので、同じ波形の反復は
+    //                            むしろ機械的に聞こえる。これは“質感”の素材
+    //     掛けてはいけない音   … 先バレ音・大当たり音。毎回まったく同じであることが
+    //                            意味を持つ。これは“信号”の素材
+    //   pitchJitter は ±0.07、つまり ±約1.2半音ある。長三和音が1.2半音ずれれば
+    //   もう和音として成立しない。人は「同じ音の反復」より「音痴な音」のほうを
+    //   はるかに強く異常として検出するので、信号の素材では 0 一択になる。
+    //   数値にすると「0.02 くらいなら混ぜてもいいのでは」と後から中間値を入れられる余地が
+    //   残るが、その中間値に正解は無い。型で選択肢を潰しておく
     private void PlayOne(List<AudioClip> clips, Vector3 worldPosition,
-                         float volume, float pitch, float delay)
+                         float volume, float pitch, float delay, bool jitter = true)
     {
         var clip = clips[Random.Range(0, clips.Count)];
         if (clip == null) return;
@@ -428,8 +541,11 @@ public class FireworkAudioPlayer : MonoBehaviour
         src.minDistance  = minDistance;
         src.maxDistance  = maxDistance;
 
-        src.volume = Mathf.Clamp01(volume * (1f + Random.Range(-volumeJitter, volumeJitter)));
-        src.pitch  = pitch * (1f + Random.Range(-pitchJitter, pitchJitter));
+        float vJit = jitter ? Random.Range(-volumeJitter, volumeJitter) : 0f;
+        float pJit = jitter ? Random.Range(-pitchJitter,  pitchJitter)  : 0f;
+
+        src.volume = Mathf.Clamp01(volume * (1f + vJit));
+        src.pitch  = pitch * (1f + pJit);
 
         if (delay > 0f) src.PlayDelayed(delay);
         else            src.Play();
