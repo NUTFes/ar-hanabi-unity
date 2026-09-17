@@ -234,6 +234,17 @@ public class ExperienceDirector : MonoBehaviour
         for (int i = 0; i < requests.Length; i++)
             launcher?.Launch(requests[i]);
 
+        // ── 発射会計 ──
+        // 「ジェスチャー1回に対して実際に何発上がったか」を1行で残す。
+        //
+        // 発数はジェスチャーの種類だけでは決まらない。段階1の両手上げは大玉2発、
+        // 段階2〜4は1発、段階5（フィニッシャー）は2発、さらにアンサンブルが
+        // 別枠で上乗せされる（下の Update 側のログ）。
+        // 「1回のジェスチャーなのに花火が多い」と感じたときに、
+        // どの要素が何発足しているのかをログだけで切り分けられるようにしておく
+        Debug.Log($"[体験] P{trackId} {gesture} → 個人 {requests.Length}発 " +
+                  $"（コンボ段階 {stage}{(ComboEnabled ? "" : " ※コンボOFF")}）");
+
         OnComboAdvanced?.Invoke(trackId, stage, normalizedPos);
     }
 
@@ -252,5 +263,11 @@ public class ExperienceDirector : MonoBehaviour
         var shots = FireworkPlan.Ensemble(fireResult.level, fireResult.center, ensembleShellNames);
         for (int i = 0; i < shots.Length; i++)
             launcher?.Launch(shots[i]);
+
+        // アンサンブルは個人ぶんの「上乗せ」で、参加者それぞれの花火は既に上がっている。
+        // 3人以上ではミニスターマイン（3〜5発）になるので上乗せの量が一気に増える。
+        // 発射会計として個人ぶんと同じ粒度で残す（上の OnGestureDetected 側のログ参照）
+        Debug.Log($"[体験] いっしょに {fireResult.level}人 → 追加 {shots.Length}発" +
+                  "（各自の個人ぶんとは別に上乗せされる）");
     }
 }

@@ -83,6 +83,10 @@ public static class AdminUiStyle
     public const string StatusErrorHex  = "#FF7B7B";
     public const string StatusLaunchHex = "#6BD5FF";
 
+    // 検知ログの時刻。HelpTextColor と同じ色を rich text から使うためのもの
+    //（本文の白より一段落として、目が「時刻」ではなく「種類」に行くようにする）
+    public const string HelpTextHex     = "#B8C0CC";
+
     // ── 寸法（Builder が使う。Manager 側は行の生成で一部を使う）──
     public const float PanelPadding     = 24f;
     public const float HeaderHeight     = 64f;

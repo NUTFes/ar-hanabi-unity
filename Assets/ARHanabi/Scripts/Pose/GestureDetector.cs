@@ -16,6 +16,29 @@ using Mediapipe.Tasks.Components.Containers;
 //
 // 詳細ログを見たい場合は ArLog.cs 冒頭の手順で AR_VERBOSE_LOG を定義する。
 //
+// ── ⚠️ y は「下が 0 / 上が 1」（ここを間違えると全ての判定が裏返る）──
+//   MediaPipe の landmark は本来「上が 0」だが、PoseLandmarkDetector が
+//   WebCamTexture.GetPixels32()（下の行から並ぶ）をそのまま渡しているため、
+//   表示映像に対しては上下が入れ替わり、Unity のスクリーン座標と同じ向きになる。
+//   根拠と実機確認の経緯は PoseCoordinateUtil の冒頭コメントにある。
+//
+//   したがって:
+//     ・「手を上げた」は wrist.y >  shoulderY + 閾値（小なりではない）
+//     ・「立っている高さ」は窓内の y の最小値（最大値ではない）
+//     ・「上昇量」は 今 − 基準（基準 − 今 ではない）
+//
+//   実際にこの3つがすべて逆に書かれていて、次の症状が出ていた。
+//     ・腕を下ろしているだけで両手上げが成立する（手首は肩より下にあるため）。
+//       成立しっぱなしなので発火はラッチで1回に抑えられ、
+//       「新しい人が映るたびに1発上がる」「横に動いた／カメラに近づいただけで上がる」
+//       ように見えていた（どちらもトラックIDが振り直される場面）。
+//     ・本当に手を上げると条件が false になり、下ろした瞬間に成立し直す。
+//       これが「ポーズを解いたあとに花火が上がる」の正体で、
+//       かつては landmark の揺れが原因だと考えて holdGraceDuration を足していた。
+//     ・ジャンプは上昇ではなく下降で成立していた（着地・しゃがみで発火）。
+//
+//   閾値を厳しくしても消えない類の誤検出はここを疑うこと。
+//
 // ── ジャンプ判定を作り直した理由（体験設計）──
 //   旧実装は「1フレーム前との腰yの差分」（＝瞬間の上昇速度）で判定していた。
 //   これは子どもの自然なジャンプでも簡単に閾値を割り込む一方、しゃがんで
@@ -34,8 +57,14 @@ public class GestureDetector : MonoBehaviour
 {
     [Header("ジェスチャー判定設定")]
     [Tooltip("手が肩より何割上なら「上げた」と判定するか（肩幅に対する相対値）。\n" +
-             "既定 0.5 は「肩幅の半分」。子どもの短い腕でも真っすぐ伸ばせば届く高さ")]
-    [SerializeField] private float handUpThreshold    = 0.5f;
+             "0.6 は「肩幅の6割」。子どもの短い腕でも真っすぐ伸ばせば届く高さ。\n" +
+             "\n" +
+             "── 0.5 から上げた理由 ──\n" +
+             "「手上げでない動きでも打ち上がる」対策。ただし誤発火の主因は\n" +
+             "閾値の高さより landmarkVisibility 側（画面外・隠れた手首の座標を\n" +
+             "MediaPipe が推測で返す）なので、ここは上げすぎないこと。\n" +
+             "1.0 は腕の短い子どもには物理的に届かない（それで 0.5 まで下げた経緯がある）")]
+    [SerializeField] private float handUpThreshold    = 0.6f;
 
     [Tooltip("同じジェスチャーの連続発火を防ぐ秒数")]
     [SerializeField] private float gestureCooldown    = 2.0f;
@@ -96,12 +125,53 @@ public class GestureDetector : MonoBehaviour
              "直近0.8秒の中でいちばん低かった位置（＝立っている高さ）から\n" +
              "この割合ぶん腰が上がったらジャンプと判定する。\n" +
              "\n" +
+             "── 0.35 から上げた理由 ──\n" +
+             "「ジャンプでない動きでも打ち上がる」対策。腰は歩く・しゃがむ・\n" +
+             "カメラに近づくだけでも動くので、本当に跳ねたときだけ超える高さにする。\n" +
+             "\n" +
              "── 旧 jumpThreshold との違い ──\n" +
              "旧実装は「1フレーム前との差分」（瞬間の上昇速度）を見ていたが、\n" +
              "この値は「立っている高さからの絶対的な上昇量」を見る。意味が\n" +
              "まったく違うため、旧フィールドを流用せず別名にしてある\n" +
              "（保存済みの古い値が新しい意味で誤読されるのを防ぐため）")]
-    [SerializeField] private float jumpRiseThreshold  = 0.35f;
+    [SerializeField] private float jumpRiseThreshold  = 0.45f;
+
+    [Header("誤検出の除外")]
+    [Tooltip("ランドマークの信頼度がこれ未満の関節は「見えていない」とみなし、\n" +
+             "その関節を使う判定を行わない。\n" +
+             "\n" +
+             "── これが「ぽんぽん打ち上がる」の主因だった ──\n" +
+             "MediaPipe は関節が画面外にあっても隠れていても、必ず座標を返す\n" +
+             "（推測値に低い visibility が付くだけ）。手首が画面外に出ると\n" +
+             "推測座標が肩より上に来ることがあり、手を上げていないのに\n" +
+             "「手上げ」と判定されていた。カメラに近い子ども・見切れた人・\n" +
+             "背景の人で特に起きやすい。\n" +
+             "\n" +
+             "0 にすると従来どおり信頼度を一切見なくなる。\n" +
+             "\n" +
+             "── 0.6 から下げた（この回の変更）──\n" +
+             "0.6 は y 軸の向きが逆だったころ、その誤検出を打ち消すために付けた値。\n" +
+             "本当の原因（比較の向き）を直した今、この強さは要らない。\n" +
+             "MediaPipe は遠くの小さい人ほど信頼度を低く返すので、\n" +
+             "厳しいままだと「画面にかなり近づかないと反応しない」状態になる。\n" +
+             "画面外の関節はもっと低い値になるため、0.3 でも本来の目的は果たせる")]
+    [SerializeField, Range(0f, 1f)] private float landmarkVisibility = 0.3f;
+
+    [Tooltip("肩幅（正規化座標）がこれ未満の検出は判定に使わない。\n" +
+             "\n" +
+             "閾値はすべて肩幅に対する相対値なので、遠くの小さな人ほど\n" +
+             "絶対量としての閾値が小さくなり、ランドマークの揺れだけで\n" +
+             "条件を満たしてしまう。背景に小さく映り込んだ人がひとりでに\n" +
+             "花火を上げるのを防ぐ。\n" +
+             "\n" +
+             "0.03 は画面幅の3%。1280x720 なら肩幅38px で、これ未満は\n" +
+             "そもそも姿勢が当てにならない大きさ。\n" +
+             "\n" +
+             "── 0.05 から下げた（この回の変更）──\n" +
+             "0.05 も y 軸の向きが逆だったころの誤検出対策で、今は要らない。\n" +
+             "肩幅は距離に反比例するので、この値がそのまま「どこまで下がれるか」になる\n" +
+             "（画角にもよるが、0.05 だと子どもは4m ほどで反応しなくなる）")]
+    [SerializeField, Range(0.01f, 0.3f)] private float minShoulderWidth = 0.03f;
 
     // ── ジャンプ判定の内部定数 ──
     // Admin画面には出さない（現場で個別に触る値ではなく、判定アルゴリズムの
@@ -121,8 +191,18 @@ public class GestureDetector : MonoBehaviour
     private const float JumpGroundedRiseRatio = 0.3f;
 
     // 地面付近から閾値を超えるまでの時間がこれより長い場合は「ジャンプ」ではなく
-    // 「ゆっくり立ち上がった」とみなして無視する
-    private const float JumpAscentSecondsMax = 0.25f;
+    // 「ゆっくり立ち上がった」とみなして無視する。
+    // 0.25 から下げた（跳ぶ動作は速い。ゆっくりした上下動を確実に落とすため）
+    private const float JumpAscentSecondsMax = 0.20f;
+
+    // 閾値を超えた状態が何回連続したら発火するか。
+    //
+    // ── 1フレームの跳ねを弾くために要る ──
+    //   MediaPipe の腰座標は小刻みに揺れる。1フレームだけ閾値を超えた瞬間に
+    //   撃つと、跳んでいないのに上がることがある。連続で超えたことを求めると
+    //   ノイズはほぼ落ちる一方、遅れは推論1〜2回ぶん（30Hz で 30〜60ms）しか増えない。
+    //   ジャンプの滞空時間（0.3秒前後）に対して十分短いので体感は変わらない
+    private const int JumpRiseConsecutiveFrames = 2;
 
     // 発射後、再び地面付近に戻ってから次のジャンプを受け付けるまでの最短間隔。
     // これが無いと、着地の瞬間的な跳ね返り（バウンド）を2回目のジャンプとして
@@ -130,19 +210,35 @@ public class GestureDetector : MonoBehaviour
     private const float JumpRearmSeconds = 0.4f;
 
     // 足首の上昇量が腰の上昇量のこの割合を下回る場合は「しゃがんで立った」と
-    // みなしてジャンプを無視する（足が地面についたまま腰だけ上がる動き）
-    private const float AnkleRiseRatio = 0.5f;
+    // みなしてジャンプを無視する（足が地面についたまま腰だけ上がる動き）。
+    //
+    // 0.5 から上げた。本当に跳んでいれば足首は腰とほぼ同じだけ上がる（比は 1.0 に近い）。
+    // 0.5 は「腰が上がった量の半分しか足が上がっていない」まで通してしまい、
+    // 背伸び・かかと上げ・しゃがみからの立ち上がりが混ざっていた
+    private const float AnkleRiseRatio = 0.7f;
 
-    // 足首のランドマークがこの信頼度を下回るときは、映っていない・隠れている等で
-    // 数値が信用できないとみなし、足首チェックを行わず腰の上昇量だけで判定する
-    private const float AnkleVisibilityThreshold = 0.5f;
+    // 足首が見えないときに腰の上昇量へ掛ける割増。
+    //
+    // ── 足首チェックを「省略」から「割増」に変えた理由 ──
+    //   以前は足首が見えなければチェックを丸ごと飛ばしていた。ところが
+    //   カメラに近い子どもは足首が画面外に出るのが普通で、その状態では
+    //   ジャンプ判定が腰の上昇量だけになり、いちばん緩い経路が
+    //   いちばん起きやすいという逆転が起きていた。
+    //   見えないときは代わりに腰の条件を厳しくして釣り合いを取る
+    private const float JumpNoAnkleRiseMultiplier = 1.35f;
 
     // ── 設定のバージョン ──
     // handUpThreshold・gestureCooldown は名前を変えずに既定値を変えたため、
     // 現場PCの保存値がある場合はここで一度だけ消す（SettingsStore.DeleteKey 参照）。
     // jumpThreshold は新しいキー名（jumpRiseThreshold）に変わっているので
     // 自然に無効化される（消さなくても実害はないが、掃除のためまとめて消す）
-    private const int RequiredSettingsVersion = 2;
+    //
+    // ── 3 に上げた理由 ──
+    //   誤発火対策で handUpThreshold（0.5→0.6）と jumpRiseThreshold（0.35→0.45）の
+    //   既定値を厳しくした。PlayerPrefs の保存値は Inspector の値より優先されるため、
+    //   一度でも Admin 画面から触ったことのある現場PCでは、消さないと
+    //   古い緩い値がそのまま使われ続けて「厳しくしたのに変わらない」ことになる
+    private const int RequiredSettingsVersion = 3;
 
     // ── 永続化 ──
     // 会場・客層で毎回変えたくなる値なので、Admin画面（SETTINGS）から調整できる。
@@ -158,6 +254,7 @@ public class GestureDetector : MonoBehaviour
             // 削除後は Inspector/シーンの新しい既定値がそのまま使われる
             SettingsStore.DeleteKey($"{nameof(GestureDetector)}.{nameof(handUpThreshold)}");
             SettingsStore.DeleteKey($"{nameof(GestureDetector)}.jumpThreshold"); // 旧フィールド名（掃除用）
+            SettingsStore.DeleteKey($"{nameof(GestureDetector)}.{nameof(jumpRiseThreshold)}");
             SettingsStore.DeleteKey($"{nameof(GestureDetector)}.{nameof(gestureCooldown)}");
             SettingsStore.DeleteKey($"{nameof(GestureDetector)}.{nameof(poseHoldDuration)}");
             SettingsStore.SetSettingsVersion(RequiredSettingsVersion);
@@ -240,6 +337,17 @@ public class GestureDetector : MonoBehaviour
         // 発射済みなら次のジャンプを受け付けない（着地して再武装するまで）
         public bool  jumpArmed        = true;
         public float jumpFiredTime    = -999f;
+
+        // 必要な高さを連続で超えた回数。途切れたら 0 に戻る
+        //（1フレームだけのノイズで撃たないため。JumpRiseConsecutiveFrames 参照）
+        public int   jumpRiseFrames   = 0;
+
+        // ── 診断用 ──
+        // 同じフレームで2回発火していないかを見るための記録。
+        // クールダウンを発射直前に見る（CanFire）ようにして解消済みだが、
+        // 「1回のジェスチャーなのに花火が多い」の実際の原因だったので見張りを残す
+        public int         lastFireFrame   = -1;
+        public GestureType lastFireGesture;
     }
 
     private readonly Dictionary<int, PersonState> _personStates = new();
@@ -269,13 +377,10 @@ public class GestureDetector : MonoBehaviour
         var centerY   = (leftHip.y + rightHip.y) / 2f;
         var screenPos = new Vector2(centerX, centerY);
 
-        float now     = Time.time;
-        bool  canFire = (now - state.lastGestureTime) > gestureCooldown;
+        float now = Time.time;
 
         // ── 肩幅を基準にスケールを計算 ──
         float shoulderWidth = Mathf.Abs(leftShoulder.x - rightShoulder.x);
-        // 肩幅が極端に小さい場合（検出不安定）はスキップ
-        if (shoulderWidth < 0.01f) return;
 
         // 閾値を肩幅に対する相対値で計算
         float dynamicHandUpThreshold = shoulderWidth * handUpThreshold;
@@ -296,10 +401,46 @@ public class GestureDetector : MonoBehaviour
         // その瞬間には直近0.1秒しかデータが無く基準を計算できないため）
         UpdateHistory(state.ankleHistory, now, ankleY);
 
-        if (canFire)
+        // ── クールダウン中も状態機械は回し続ける ──
+        //   以前はここを丸ごと canFire で囲っていたため、クールダウン中は
+        //   jumpGroundedTime が更新されず、明けた直後に「地面付近にいた時刻」が
+        //   古いまま残って立ち上がりの速さを誤判定していた。
+        //   発射できるかは撃つ直前（CanFire）だけで見る
+        float baseline = ComputeBaseline(state.hipHistory, now);
+        if (baseline >= 0f)
         {
-            float baseline = ComputeBaseline(state.hipHistory, now);
-            if (baseline >= 0f)
+            // y は上が大きいので、上昇量は「今 − 基準」。
+            // 逆にすると下降量になり、着地やしゃがみでジャンプ判定が出る
+            float rise = hipY - baseline;
+
+            // 足首が見えていれば「腰と一緒に足も上がったか」で跳ねたことを確かめられる。
+            // 見えていないときは確かめようがないので、代わりに腰の条件を厳しくする
+            //（JumpNoAnkleRiseMultiplier のコメント参照）
+            bool  ankleVisible = IsVisible(leftAnkle) && IsVisible(rightAnkle);
+            float requiredRise = dynamicJumpThreshold *
+                                 (ankleVisible ? 1f : JumpNoAnkleRiseMultiplier);
+
+            // 地面付近にいる間は基準時刻を更新し続ける。閾値を超えた瞬間、
+            // この時刻からの経過時間が「立ち上がりの速さ」になる
+            if (rise <= requiredRise * JumpGroundedRiseRatio || state.jumpGroundedTime < 0f)
+                state.jumpGroundedTime = now;
+
+            bool fastEnough = (now - state.jumpGroundedTime) <= JumpAscentSecondsMax;
+            bool highEnough = rise > requiredRise;
+
+            // 1フレームだけの跳ねを弾く。連続して超えた回数を数え、
+            // 割り込んだら 0 に戻す（JumpRiseConsecutiveFrames のコメント参照）
+            state.jumpRiseFrames = highEnough && fastEnough ? state.jumpRiseFrames + 1 : 0;
+
+            // 毎フレーム出るので Verbose（実機での符号確認・閾値調整用）
+            ArLog.Verbose($"[Pose] P{personIndex} 腰baseline={baseline:F3} hipY={hipY:F3} " +
+                          $"rise={rise:F3} 必要={requiredRise:F3} fast={fastEnough} " +
+                          $"連続={state.jumpRiseFrames} 足首見えてる={ankleVisible}");
+
+            if (state.jumpArmed
+                && state.jumpRiseFrames >= JumpRiseConsecutiveFrames
+                && (!ankleVisible || PassesAnkleCheck(state, now, ankleY, rise))
+                && CanFire(state, now))
             {
                 float rise = baseline - hipY;
 
@@ -331,18 +472,39 @@ public class GestureDetector : MonoBehaviour
         }
 
         // ── 手上げ判定 ──
+        //
+        // ⚠️ 手首は「見えている」ことを必ず確かめてから使う。
+        //   MediaPipe は手首が画面外でも隠れていても座標を返す（推測値に低い
+        //   visibility が付くだけ）。カメラに近い子どもは手を上げた瞬間に手首が
+        //   画面の外へ出るし、体の後ろに回した手も推測になる。その推測座標が
+        //   肩より上に来ると、手を上げていないのに「手上げ」と判定されていた。
+        //   これが「ぽんぽん打ち上がる」のいちばん大きな原因
         float shoulderY   = (leftShoulder.y + rightShoulder.y) / 2f;
-        bool  leftHandUp  = leftWrist.y  < (shoulderY - dynamicHandUpThreshold);
-        bool  rightHandUp = rightWrist.y < (shoulderY - dynamicHandUpThreshold);
+        bool  leftWristVisible  = IsVisible(leftWrist);
+        bool  rightWristVisible = IsVisible(rightWrist);
+        bool  leftHandUp  = leftWristVisible  && leftWrist.y  > (shoulderY + dynamicHandUpThreshold);
+        bool  rightHandUp = rightWristVisible && rightWrist.y > (shoulderY + dynamicHandUpThreshold);
+
+        // ── 手首だけ弾かれている状態を無音にしない ──
+        //   肩と腰は見えているので人としては処理され続けるが、手首が両方とも
+        //   信頼度の下限を割っていると、どれだけ手を上げても永久に成立しない。
+        //   ログに何も出ないまま「反応しない」だけになるのがいちばん困るので、
+        //   理由と実測値を残す（下限を下げる判断がログだけでできるように）
+        if (!leftWristVisible && !rightWristVisible)
+        {
+            LogSkipped($"P{personIndex} 手首の信頼度が下限 {landmarkVisibility:F2} 未満" +
+                       $"（左 {(leftWrist.visibility ?? 1f):F2} / 右 {(rightWrist.visibility ?? 1f):F2}）", now);
+        }
         bool  bothHandsUp = leftHandUp && rightHandUp;
         bool  oneHandUp   = leftHandUp ^ rightHandUp;
 
         // 毎フレーム × 人数分出るので Verbose
         ArLog.Verbose($"[Pose] P{personIndex} " +
                       $"shoulderY={shoulderY:F2} " +
-                      $"leftWristY={leftWrist.y:F2} rightWristY={rightWrist.y:F2} " +
+                      $"leftWristY={leftWrist.y:F2}(見えてる={IsVisible(leftWrist)}) " +
+                      $"rightWristY={rightWrist.y:F2}(見えてる={IsVisible(rightWrist)}) " +
                       $"leftUp={leftHandUp} rightUp={rightHandUp} " +
-                      $"canFire={canFire}");
+                      $"canFire={CanFire(state, now)}");
 
         // ── 手上げの発射判定 ──
         //
@@ -403,7 +565,7 @@ public class GestureDetector : MonoBehaviour
             // ポーズを維持している間ずっと出るので Verbose
             ArLog.Verbose($"[Pose] P{personIndex} 片手上げ中: {heldDuration:F2}秒 / {oneHandHold}秒");
 
-            if (heldDuration >= oneHandHold && !state.oneHandFired && canFire)
+            if (heldDuration >= oneHandHold && !state.oneHandFired && CanFire(state, now))
             {
                 FireGesture(personIndex, GestureType.OneHandUp, screenPos, state);
                 state.oneHandFired = true;
@@ -425,7 +587,7 @@ public class GestureDetector : MonoBehaviour
         // 保持中の見た目を出すと「溜まっているのに撃てない」という嘘になる。
         var feedback = new PoseFeedback { trackId = personIndex };
 
-        if (!canFire)
+        if (!CanFire(state, now))
         {
             feedback.state    = PoseFeedbackState.Cooldown;
             feedback.progress = gestureCooldown <= 0f
@@ -442,7 +604,7 @@ public class GestureDetector : MonoBehaviour
         }
         else if (state.oneHandUpStartTime >= 0f)
         {
-            // 片手側は実効保持時間（poseHoldDuration + oneHandExtraHold）で割る。
+            // 片手側は実効保持時間（保持時間 + 片手の追加保持）で割る。
             // 発射条件と同じ分母にしないと、進捗が満タンなのに撃たない状態ができる
             float oneHandHold = poseHoldDuration + Mathf.Max(0f, oneHandExtraHold);
 
@@ -472,33 +634,37 @@ public class GestureDetector : MonoBehaviour
 
     // ── 基準（baseline）の計算 ──
     // 窓内（直近 JumpBaselineWindowSeconds 秒）のうち、直近 JumpBaselineExcludeRecentSeconds 秒を
-    // 除いた範囲でいちばん大きい y（＝いちばん低い位置）を返す。該当データがなければ -1
+    // 除いた範囲でいちばん小さい y（＝いちばん低い位置）を返す。該当データがなければ -1。
+    //
+    // ⚠️ y は「下が 0 / 上が 1」。だから「いちばん低い位置」は最小値であって最大値ではない
+    //    （向きの根拠は PoseCoordinateUtil の冒頭コメント）。
+    //    ここを最大値で取っていたため、rise が上昇量ではなく下降量になっていた
     private static float ComputeBaseline(Queue<(float time, float y)> history, float now)
     {
-        float baseline = -1f;
+        float baseline = float.MaxValue;
         foreach (var (t, y) in history)
         {
             if (now - t < JumpBaselineExcludeRecentSeconds) continue;
-            if (y > baseline) baseline = y;
+            if (y < baseline) baseline = y;
         }
-        return baseline;
+        // 「データ無し」は -1 で表す。y は 0〜1 なので実データと混ざらない
+        return baseline == float.MaxValue ? -1f : baseline;
     }
 
     // ── 足首チェック ──
-    // 腰は上がっているが足首がほとんど上がっていない（＝しゃがんで立っただけ）を除外する。
-    // 足首の可視性が低ければ判定できないので、その場合は無条件で通す（速度条件のみに委ねる）。
+    // 腰は上がっているが足首がほとんど上がっていない（＝しゃがんで立った・背伸びした）を除外する。
+    // 本当に跳んでいれば足首は腰とほぼ同じだけ上がる。
+    //
+    // 呼び出し側が「足首が見えている」ことを確認済みの前提。見えていない場合は
+    // ここを呼ばず、代わりに腰の必要上昇量を割り増している（JumpNoAnkleRiseMultiplier）。
     // 履歴は毎フレーム（ProcessLandmarks 側で）積んである前提で、ここでは読むだけ
-    private static bool PassesAnkleCheck(
-        PersonState state, float now,
-        NormalizedLandmark leftAnkle, NormalizedLandmark rightAnkle, float ankleY, float hipRise)
+    private static bool PassesAnkleCheck(PersonState state, float now, float ankleY, float hipRise)
     {
-        float visibility = Mathf.Min(leftAnkle.visibility ?? 1f, rightAnkle.visibility ?? 1f);
-        if (visibility < AnkleVisibilityThreshold) return true;
-
         float ankleBaseline = ComputeBaseline(state.ankleHistory, now);
         if (ankleBaseline < 0f) return true; // データ不足時は速度条件のみに委ねる
 
-        float ankleRise = ankleBaseline - ankleY;
+        // 腰と同じ向きで測る（y は上が大きいので「今 − 基準」が上昇量）
+        float ankleRise = ankleY - ankleBaseline;
         return ankleRise > hipRise * AnkleRiseRatio;
     }
 
@@ -541,7 +707,29 @@ public class GestureDetector : MonoBehaviour
         int personIndex, GestureType gesture,
         Vector2 screenPos, PersonState state)
     {
-        state.lastGestureTime = Time.time;
+        float  now       = Time.time;
+        string sinceText = state.lastGestureTime < 0f
+            ? "初回"
+            : $"{now - state.lastGestureTime:F2}秒";
+
+        // ── 同一フレームでの二重発火の検出（見張り）──
+        //   クールダウンを発射直前に見る（CanFire）ようにしたので、ここは
+        //   もう起きないはず。ただし「両手を上げながら跳ねると Jump と
+        //   BothHandsUp が同じフレームで両方成立して花火が余分に上がる」という
+        //   実際に起きた不具合なので、再発したら黙って戻らないよう見張りを残す
+        int frame = Time.frameCount;
+        if (state.lastFireFrame == frame)
+        {
+            Debug.LogWarning(
+                $"[Gesture] Person{personIndex}: 同じフレームで2回発火しました " +
+                $"（{state.lastFireGesture} → {gesture}）。" +
+                "クールダウンはフレーム先頭で判定しているため、同一フレーム内では効きません。" +
+                "1回のジェスチャーで花火が余分に上がる原因になります");
+        }
+        state.lastFireFrame   = frame;
+        state.lastFireGesture = gesture;
+
+        state.lastGestureTime = now;
 
         if (PoseEventBus.Instance == null)
         {

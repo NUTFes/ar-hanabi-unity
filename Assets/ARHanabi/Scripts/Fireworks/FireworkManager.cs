@@ -437,8 +437,15 @@ public class FireworkManager : MonoBehaviour
                     _entries.Add(entry);
                     RegisterApiId(dto.id);
 
+                    // 変換だけ済ませて、表示は停止のままにする。
+                    //
+                    // ── 取得と同時に有効化しない理由 ──
+                    //   以前はここで SetActive(entry, true) を呼んでいたため、
+                    //   取得したそばから中身を確認する間もなく本番の花火に混ざっていた。
+                    //   来場者が投稿した画像をそのまま出す運用なので、
+                    //   出すかどうかは必ず人が見てから決められる状態にしておく。
+                    //   変換だけは済ませておくので、一覧の［停止中］を押せばすぐ出せる
                     ConvertEntry(entry);
-                    SetActive(entry, true);
                     added++;
                 }
             }
