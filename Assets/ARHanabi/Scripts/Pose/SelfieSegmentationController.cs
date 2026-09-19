@@ -192,43 +192,42 @@ public class SelfieSegmentationController : MonoBehaviour
         // 3. NHWC (1, H, W, 3) のテンソルを使い回しバッファ上に構築
         //    GetPixelData は生データへのビューなのでコピー・確保が発生しない
         //
-        // 白飛び対策のトーン補正（明るさ補正）。PoseLandmarkDetector と同じ仕組みを通す。
-        // 人物マスクの推論も同じ白飛びで劣化するため。CameraToneController は縦方向に
-        // バンド分けした自動補正を持つので、行ごとに LUT を取り直す必要がある
-        // （行の外で1回だけ引くと、画面の一部だけの白飛びに対応できない。
-        //   CameraToneController 冒頭コメント参照）。
-        // Instance の null チェックは行の外で1回だけ済ませる（`?.` は素の参照比較なので
-        // 画素ごとに呼んでも実測できる負荷にはならないが、行ごとに留めておく）
+        // 白飛び対策のトーン補正（明るさ補正）。人物マスクの推論も同じ白飛びで劣化するため。
+        //
+        // ⚠️ ここでは CameraToneController の「行ごとのバンド補間」ではなく
+        //   UniformLutOrNull（画面全体で1本、位置に依存しない版）を使う。
+        //   このバッファは Graphics.Blit → ReadPixels → GetPixelData を経由しており、
+        //   PoseLandmarkDetector の WebCamTexture.GetPixels32() 直読みと同じ行の向き
+        //   （行0=下端）を保っているかを実機で確認できていない。取り違えると
+        //   「飛んでいる場所と逆側を補正する」という本末転倒な壊れ方をするため、
+        //   確信が持てるまでは位置に依存しない安全な版を使う
+        //  （UniformLutOrNull 側のコメントに詳細）。人物マスクは見た目の切り抜き用途で
+        //   ジェスチャー判定の精度には関わらないので、位置精度を落とす代わりに
+        //   向き違いのリスクを消す判断にしてある。
         var pixels = _inputTexture.GetPixelData<Color24>(0);
         var tone   = CameraToneController.Instance;
+        var lut    = tone != null ? tone.UniformLutOrNull() : null;
+        int pixelCount = modelInputWidth * modelInputHeight;
         const float Inv255 = 1f / 255f;
 
-        for (int y = 0; y < modelInputHeight; y++)
+        if (lut == null)
         {
-            var lut = tone?.RowLutOrNull(y, modelInputHeight);
-            int rowStart = y * modelInputWidth;
-
-            if (lut == null)
+            for (int i = 0; i < pixelCount; i++)
             {
-                for (int x = 0; x < modelInputWidth; x++)
-                {
-                    int i = rowStart + x;
-                    var p = pixels[i];
-                    _inputFloats[i * 3 + 0] = p.r * Inv255;
-                    _inputFloats[i * 3 + 1] = p.g * Inv255;
-                    _inputFloats[i * 3 + 2] = p.b * Inv255;
-                }
+                var p = pixels[i];
+                _inputFloats[i * 3 + 0] = p.r * Inv255;
+                _inputFloats[i * 3 + 1] = p.g * Inv255;
+                _inputFloats[i * 3 + 2] = p.b * Inv255;
             }
-            else
+        }
+        else
+        {
+            for (int i = 0; i < pixelCount; i++)
             {
-                for (int x = 0; x < modelInputWidth; x++)
-                {
-                    int i = rowStart + x;
-                    var p = pixels[i];
-                    _inputFloats[i * 3 + 0] = lut[p.r] * Inv255;
-                    _inputFloats[i * 3 + 1] = lut[p.g] * Inv255;
-                    _inputFloats[i * 3 + 2] = lut[p.b] * Inv255;
-                }
+                var p = pixels[i];
+                _inputFloats[i * 3 + 0] = lut[p.r] * Inv255;
+                _inputFloats[i * 3 + 1] = lut[p.g] * Inv255;
+                _inputFloats[i * 3 + 2] = lut[p.b] * Inv255;
             }
         }
 

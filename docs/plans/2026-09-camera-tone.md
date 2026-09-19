@@ -111,6 +111,16 @@ y = pow(y, EffGamma)
 （`black<eps && white>1-eps` が全バンドで成立 かつ `gamma≈1`）なら `false` になり、
 呼び出し側はループに入らずコストがゼロになる。
 
+**LUT構築時の床（`BuildLevelsLut` 内、`MinLevelsRange = 0.15`）**: 手動モードの
+黒レベル（0〜0.60）と白レベル（0.40〜1.00）は独立したスライダーなので、
+黒0.55・白0.45のように `white < black` の組み合わせも操作上は作れてしまう。
+これをそのまま `range = white - black` に使うと `range` が実質0近くまで潰れ、
+検出用画像が白黒2値に潰れたステップ関数になる（コードレビューで指摘）。
+自動側は `Measure()` 内で同じ理由の床を既に持っていたが、手動側にはこの床が
+無かったため、唯一のLUT作成箇所である `BuildLevelsLut` で
+`white = max(white, black + MinLevelsRange)` を必ず通すようにした
+（自動側の値は既に床を満たしているので、この床は手動側にだけ実際に効く）。
+
 **自動レベルの計測**（`Measure(Color32[] raw, int width, int height, float now)`）
 
 - 0.25秒に1回だけ実際に計測する（呼び出し自体は毎フレームでよい。内部で間引く）
@@ -144,13 +154,23 @@ y = pow(y, EffGamma)
 
 ### 呼び出し側 ②: `SelfieSegmentationController.RunSegmentation`
 
-NHWC 変換ループを行単位に組み直し、行ごとに `CameraToneController.Instance
-?.RowLutOrNull(y, height)` を引いてから、その行ぶんの画素だけ処理する
-（`p.r * Inv255` 等をそのまま／`lut[p.r] * Inv255` に差し替える）。
-画面の一部だけが白飛びしているケースに対応するため、LUT をループの外で
-1回だけ引くのではなく行ごとに取り直す必要がある。Instance の null チェックだけは
-行の外で1回に留める（`?.` は素の参照比較で、Unity の `==` オーバーロードとは違い
-画素ごとに呼んでも問題にならないが、行単位に揃えてある）。
+こちらは行ごとのバンド補間ではなく `UniformLutOrNull()`（画面全体で1本、
+位置に依存しない版）をループの外で1回だけ引く。
+
+**行ごとの補間を使わない理由**: バンドは「WebCamTexture.GetPixels32() と同じ並び
+（行0=下端）」を前提に計測・適用している。しかしこのバッファは
+`Graphics.Blit → ReadPixels → GetPixelData` を経由しており、この経路が
+PoseLandmarkDetector の直読みと同じ行の向きを保つかを実機で確認できていない
+（プラットフォーム・グラフィックスAPI次第で Blit の上下が変わりうる、という
+コードレビューでの指摘を受けての設計変更）。取り違えると「飛んでいる場所と
+逆側を補正する」という機能の目的そのものを裏切る壊れ方になり、しかも
+例外を出さず静かに間違えるため気づきにくい。人物マスクは見た目の切り抜き用途
+（ジェスチャー判定の精度には関わらない）なので、行の向きを確信できるまでは
+位置精度を落としてでも安全な `UniformLutOrNull()` を使う。
+
+Instance の null チェックは `PoseLandmarkDetector` と同じ明示的な `!= null` に揃えてある
+（`?.` は UnityEngine.Object の破棄済み判定を素通りする「フェイクnull」を拾えないため。
+同じ Instance を参照する2箇所でチェックの書き方が割れていた点をレビューで指摘された）。
 
 ### 表示映像は変えない（意図的）
 
@@ -253,6 +273,13 @@ gridChildName, buttonOrder, sliderSpecs, columns, log)` へ一般化し、
   「カメラ側の露出を下げてください」が出ること
 - `AR_VERBOSE_LOG` を有効にして、`[Tone] バンド別（下→上）白飛び率／平均輝度` が
   飛んでいる場所のバンドだけ高い値を示すこと
+- 自動OFFで黒レベルを白レベルより大きい値にしてみて、検出用画像が白黒2値に
+  潰れないこと（`MinLevelsRange` の床が効いている証拠。手で試すのが難しければ
+  Inspector で `blackLevel`/`whiteLevel` を直接逆転させて確認する）
+- 背景除去（人物マスク）が上部・下部どちらの白飛びでも極端に破綻しないこと
+  （`UniformLutOrNull` は画面全体に同じ補正を掛けるだけなので、骨格検出ほど
+  局所的には効かない。「多少マシになる」が確認できれば十分で、
+  骨格検出と同じ精度の局所補正は意図的に入れていない）
 
 **負荷**
 - Profilerの`ARHanabi.Pose.Tone`を見て、1280x720@30Hzで許容できなければ

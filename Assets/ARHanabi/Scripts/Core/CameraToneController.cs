@@ -39,11 +39,19 @@ using UnityEngine;
 //   という現場向けの単純な受け皿として GUI を増やさないままにしてある。
 //
 // ── 呼び出し側 ──
-//   ・PoseLandmarkDetector           … 検出用バッファへ毎フレーム Measure→Apply
-//   ・SelfieSegmentationController   … NHWC 変換ループの中で行ごとに LUT を直接引く
+//   ・PoseLandmarkDetector           … 検出用バッファへ毎フレーム Measure→Apply（行ごとのバンド補間）
+//   ・SelfieSegmentationController   … NHWC 変換ループの中で UniformLutOrNull を1回だけ引く
 //   どちらも「発火の瞬間に Instance を引く」pull 方式で、push（配る）はしない
 //   （RuntimeInitializeOnLoadMethod での自己生成とシーン上のコンポーネントの
 //   起動順を考える必要が出るのを避ける。CockpitFrameOverlay 等と同じ作法）。
+//
+//   ⚠️ 行ごとのバンド補間（Apply/BuildRowLut）は PoseLandmarkDetector 専用。
+//   PoseLandmarkDetector は WebCamTexture.GetPixels32() を直接読むので「行0=下端」の
+//   前提が確実に成立するが、SelfieSegmentationController の入力は
+//   Graphics.Blit→ReadPixels→GetPixelData を経由しており、この経路が同じ行の向きを
+//   保つかを実機で確認できていない（プラットフォーム次第で Blit の上下が変わりうる）。
+//   人物マスクは見た目の切り抜き用途（ジェスチャー判定の精度には関わらない）なので、
+//   そちらは行位置に依存しない UniformLutOrNull を使う（詳細はそのコメント参照）。
 public class CameraToneController : MonoBehaviour
 {
     public static CameraToneController Instance { get; private set; }
@@ -109,7 +117,7 @@ public class CameraToneController : MonoBehaviour
     /// <summary>ラベルに実効値（自動が計算した値）を併記すべきか</summary>
     public bool LevelsOverridden => autoLevels;
 
-    // ── 実効値。呼び出し側はここではなく HasCorrection/Apply/RowLutOrNull しか見ない ──
+    // ── 実効値。呼び出し側はここではなく HasCorrection/Apply/UniformLutOrNull しか見ない ──
     private float EffBlackForBand(int band) => autoLevels ? _autoBlackBand[band] : blackLevel;
     private float EffWhiteForBand(int band) => autoLevels ? _autoWhiteBand[band] : whiteLevel;
     private float EffGamma => gamma;   // ガンマは自動で動かさない（自動は「範囲」だけを決める）。バンド共通
@@ -177,9 +185,15 @@ public class CameraToneController : MonoBehaviour
         _lutsBuilt = true;
     }
 
-    // レベル補正 → ガンマの順。range が0近くまで潰れても NaN/Inf を出さないよう底を敷く
+    // レベル補正 → ガンマの順。
+    //
+    // ⚠️ white < black + MinLevelsRange になると (x-black)/range が実質2値の
+    //   ステップ関数になり、検出用画像が白黒2値に潰れる。自動側は Measure() 内で
+    //   既に同じ床を掛けているが、手動スライダー（黒0〜0.6／白0.4〜1.0が独立に動く）
+    //   はここを通るまでノーガードだったので、唯一の作り手であるここで必ず敷いておく
     private static void BuildLevelsLut(byte[] lut, float black, float white, float gamma)
     {
+        white = Mathf.Max(white, black + MinLevelsRange);
         float range = Mathf.Max(1e-4f, white - black);
         for (int i = 0; i < LutSize; i++)
         {
@@ -250,18 +264,58 @@ public class CameraToneController : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// 指定した行に使う LUT を返す（Color32 以外の画素形式を扱う呼び出し側向け。
-    /// SelfieSegmentationController 参照）。HasCorrection が false なら null を返す
-    /// （呼び出し側は無補正のまま処理してよい）。
-    /// 戻り値は使い回しバッファなので、次にこのメソッドを呼ぶまでの間だけ有効
-    /// </summary>
-    public byte[] RowLutOrNull(int row, int height)
-    {
-        if (!HasCorrection) return null;   // これが RebuildLutsIfNeeded を内部で呼ぶ
+    // 行位置に依存しない版のLUTを焼く使い回しバッファ（_rowLutScratchとは別に持つ。
+    // 呼び出し頻度・タイミングが違う2つの消費者が同じ配列を取り合うと、
+    // 片方が読んでいる最中に他方が書き替える事故を生みうるため分離してある）
+    private readonly byte[] _uniformLutScratch = new byte[LutSize];
+    private bool  _uniformLutBuilt;
+    private float _uniformLutBlack = float.NaN, _uniformLutWhite = float.NaN, _uniformLutGamma = float.NaN;
 
-        BuildRowLut(row, height);
-        return _rowLutScratch;
+    /// <summary>
+    /// 行位置に依存しない、画面全体で1本の LUT を返す（全バンドの単純平均）。
+    /// HasCorrection が false なら null を返す（呼び出し側は無補正のまま処理してよい）。
+    ///
+    /// ── なぜ行ごとの補間（Apply/BuildRowLut）を使わないのか ──
+    ///   バンドは「WebCamTexture.GetPixels32() と同じ並び（行0=下端）」を前提に
+    ///   計測・適用している（クラス冒頭コメント参照）。SelfieSegmentationController の
+    ///   入力バッファは WebCamTexture から Graphics.Blit → ReadPixels → GetPixelData を
+    ///   経由しており、この経路が同じ行の向きを保つかを実機で確認できていない
+    ///  （プラットフォーム・グラフィックスAPIによって Blit の上下が変わることがある）。
+    ///   向きを取り違えると「飛んでいる場所と逆側を補正する」という、
+    ///   この機能の目的そのものを裏切る壊れ方になる。人物マスクは見た目の切り抜き用途
+    ///   （ジェスチャー判定の精度には関わらない）なので、行の向きを確信できるまでは
+    ///   位置に依存しない安全な版を使う
+    /// </summary>
+    public byte[] UniformLutOrNull()
+    {
+        if (!toneEnabled) return null;
+
+        float black = 0f, white = 0f;
+        for (int b = 0; b < AutoBandCount; b++)
+        {
+            black += EffBlackForBand(b);
+            white += EffWhiteForBand(b);
+        }
+        black /= AutoBandCount;
+        white /= AutoBandCount;
+        float g = EffGamma;
+
+        if (black < NoOpEps && white > 1f - NoOpEps && Mathf.Abs(g - 1f) < NoOpEps)
+            return null;
+
+        if (!_uniformLutBuilt ||
+            !Mathf.Approximately(black, _uniformLutBlack) ||
+            !Mathf.Approximately(white, _uniformLutWhite) ||
+            !Mathf.Approximately(g,     _uniformLutGamma))
+        {
+            BuildLevelsLut(_uniformLutScratch, black, white, g);
+            _uniformLutBlack = black;
+            _uniformLutWhite = white;
+            _uniformLutGamma = g;
+            _uniformLutBuilt = true;
+        }
+
+        return _uniformLutScratch;
     }
 
     // ── 自動レベルの計測 ──
@@ -277,9 +331,12 @@ public class CameraToneController : MonoBehaviour
     private const float UpperPercentile       = 0.98f;
 
     // 安全弁。真っ白な壁を見たときに人まで潰さないための床
-    //（これが無いと「白飛びに応じて黒レベルを上げる」が発散し、映像全体が真っ黒になる）
-    private const float MaxAutoBlack = 0.60f;
-    private const float MinAutoRange = 0.15f;
+    //（これが無いと「白飛びに応じて黒レベルを上げる」が発散し、映像全体が真っ黒になる）。
+    // MinLevelsRange は自動の安全弁と、BuildLevelsLut の床（手動モード向け）の両方で使う
+    // 共有の値。「白と黒がこれ以上近づくと画像として意味を失う」という同じ理由なので、
+    // 別の定数として2本持たない
+    private const float MaxAutoBlack   = 0.60f;
+    private const float MinLevelsRange = 0.15f;
 
     // 時定数（秒）。毎フレーム値が飛ぶと検出のしきい値判定が揺れるので必ず均す。
     // 初回計測時は over-shoot気味に速く寄せる（起動直後から待たされないため）
@@ -364,7 +421,7 @@ public class CameraToneController : MonoBehaviour
             float targetWhite = PercentileLuma(_bandHistograms[b], _bandSampleCount[b], UpperPercentile) / 255f;
 
             targetBlack = Mathf.Min(targetBlack, MaxAutoBlack);
-            targetWhite = Mathf.Max(targetWhite, targetBlack + MinAutoRange);
+            targetWhite = Mathf.Max(targetWhite, targetBlack + MinLevelsRange);
 
             _autoBlackBand[b] = Mathf.Lerp(_autoBlackBand[b], targetBlack, alpha);
             _autoWhiteBand[b] = Mathf.Lerp(_autoWhiteBand[b], targetWhite, alpha);
