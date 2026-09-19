@@ -191,14 +191,45 @@ public class SelfieSegmentationController : MonoBehaviour
 
         // 3. NHWC (1, H, W, 3) のテンソルを使い回しバッファ上に構築
         //    GetPixelData は生データへのビューなのでコピー・確保が発生しない
+        //
+        // 白飛び対策のトーン補正（明るさ補正）。PoseLandmarkDetector と同じ仕組みを通す。
+        // 人物マスクの推論も同じ白飛びで劣化するため。CameraToneController は縦方向に
+        // バンド分けした自動補正を持つので、行ごとに LUT を取り直す必要がある
+        // （行の外で1回だけ引くと、画面の一部だけの白飛びに対応できない。
+        //   CameraToneController 冒頭コメント参照）。
+        // Instance の null チェックは行の外で1回だけ済ませる（`?.` は素の参照比較なので
+        // 画素ごとに呼んでも実測できる負荷にはならないが、行ごとに留めておく）
         var pixels = _inputTexture.GetPixelData<Color24>(0);
-        int pixelCount = modelInputWidth * modelInputHeight;
-        for (int i = 0; i < pixelCount; i++)
+        var tone   = CameraToneController.Instance;
+        const float Inv255 = 1f / 255f;
+
+        for (int y = 0; y < modelInputHeight; y++)
         {
-            var p = pixels[i];
-            _inputFloats[i * 3 + 0] = p.r / 255f;
-            _inputFloats[i * 3 + 1] = p.g / 255f;
-            _inputFloats[i * 3 + 2] = p.b / 255f;
+            var lut = tone?.RowLutOrNull(y, modelInputHeight);
+            int rowStart = y * modelInputWidth;
+
+            if (lut == null)
+            {
+                for (int x = 0; x < modelInputWidth; x++)
+                {
+                    int i = rowStart + x;
+                    var p = pixels[i];
+                    _inputFloats[i * 3 + 0] = p.r * Inv255;
+                    _inputFloats[i * 3 + 1] = p.g * Inv255;
+                    _inputFloats[i * 3 + 2] = p.b * Inv255;
+                }
+            }
+            else
+            {
+                for (int x = 0; x < modelInputWidth; x++)
+                {
+                    int i = rowStart + x;
+                    var p = pixels[i];
+                    _inputFloats[i * 3 + 0] = lut[p.r] * Inv255;
+                    _inputFloats[i * 3 + 1] = lut[p.g] * Inv255;
+                    _inputFloats[i * 3 + 2] = lut[p.b] * Inv255;
+                }
+            }
         }
 
         var shape = new Unity.InferenceEngine.TensorShape(1, modelInputHeight, modelInputWidth, 3);

@@ -102,9 +102,15 @@ public class PoseLandmarkDetector : MonoBehaviour
     // どの工程に何ミリ秒かかっているかが名前付きで読める。
     // ProfilerMarker.Auto() は構造体を返すのでアロケーションは発生しない。
     private static readonly ProfilerMarker _markerReadback = new("ARHanabi.Pose.Readback");
+    private static readonly ProfilerMarker _markerTone     = new("ARHanabi.Pose.Tone");
     private static readonly ProfilerMarker _markerUpload   = new("ARHanabi.Pose.Upload");
     private static readonly ProfilerMarker _markerDetect   = new("ARHanabi.Pose.DetectAsync");
     private static readonly ProfilerMarker _markerDispatch = new("ARHanabi.Pose.Dispatch");
+
+    // CameraToneController は RuntimeInitializeOnLoadMethod で自動生成されるが、
+    // 起動順の組み合わせを考えなくて済むよう push（配る）ではなく pull（毎フレーム引く）にする。
+    // DopamineModeController を GestureDetector が引く形（Dopa プロパティ）と同じ作法
+    private static CameraToneController Tone => CameraToneController.Instance;
 
     // スレッド間の受け渡し（最新の1件のみ保持）
     private PoseLandmarkerResult _latestResult;
@@ -351,6 +357,23 @@ public class PoseLandmarkDetector : MonoBehaviour
         }
 
         DetectFrozenFrame();
+
+        // 白飛び対策のトーン補正（明るさ補正）。会場の照明が明るいと画素が255に張り付き、
+        // このあとの推論で人が検出できなくなるため、検出用バッファだけ手前まで戻す。
+        //
+        // ⚠️ 順序を崩さないこと。DetectFrozenFrame() より後・SetPixelData より前に置く。
+        //   自動モードは LUT が毎フレーム動きうるため、フレーム停止のハッシュ判定より
+        //   先に適用すると「カメラが止まっても二度と警告が出ない」事故になる
+        //   （CameraToneController冒頭コメント参照）。表示側の背景Quadには掛けない。
+        using (_markerTone.Auto())
+        {
+            var tone = Tone;
+            if (tone != null)
+            {
+                tone.Measure(_pixelBuffer, _webCamTexture.width, _webCamTexture.height, Time.time);
+                tone.Apply(_pixelBuffer, _webCamTexture.width, _webCamTexture.height);
+            }
+        }
 
         // CPU コピー ＋ CPU→GPU アップロード
         using (_markerUpload.Auto())
