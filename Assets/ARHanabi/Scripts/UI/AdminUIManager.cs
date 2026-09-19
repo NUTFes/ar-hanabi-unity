@@ -88,7 +88,7 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private ScrollRect      gestureLogScroll;
 
     [Header("タブ")]
-    [Tooltip("6枚のタブ。同時に開くのは1枚だけ。\n" +
+    [Tooltip("7枚のタブ。同時に開くのは1枚だけ。\n" +
              "選択中は濃紺背景＋白文字、非選択は白背景＋濃紺文字（AdminUiStyle）")]
     [SerializeField] private Button           tabBasicButton;
     [SerializeField] private TextMeshProUGUI  tabBasicText;
@@ -102,6 +102,8 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private TextMeshProUGUI  tabExperienceText;
     [SerializeField] private Button           tabDopamineButton;
     [SerializeField] private TextMeshProUGUI  tabDopamineText;
+    [SerializeField] private Button           tabToneButton;
+    [SerializeField] private TextMeshProUGUI  tabToneText;
     [Tooltip("各タブの中身。SetActive で1枚だけ表示する")]
     [SerializeField] private Transform        tabBasicPage;
     [SerializeField] private Transform        tabSpacePage;
@@ -109,6 +111,7 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private Transform        tabShellPage;
     [SerializeField] private Transform        tabExperiencePage;
     [SerializeField] private Transform        tabDopaminePage;
+    [SerializeField] private Transform        tabTonePage;
     [Tooltip("選択中のタブに応じて切り替わる1行の説明文")]
     [SerializeField] private TextMeshProUGUI  tabHelpText;
     [Tooltip("タブ行の右端に常設する件数表示。\n" +
@@ -167,6 +170,25 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private TextMeshProUGUI  dopaHandUpText;
     [SerializeField] private Slider           dopaJumpSlider;
     [SerializeField] private TextMeshProUGUI  dopaJumpText;
+
+    [Header("明るさ補正（白飛び対策）")]
+    [Tooltip("検出に渡す画像だけにレベル補正＋ガンマを掛けるON/OFF。表示（背景Quad）には掛けない。\n" +
+             "OFFのときは画素に一切触れない（CameraToneController.LutOrNull が null を返す）")]
+    [SerializeField] private Button           toneButton;
+    [SerializeField] private TextMeshProUGUI  toneText;
+    [Tooltip("黒レベル・白レベルを映像から自動で決める。ONの間、下の黒レベル/白レベルの\n" +
+             "スライダーを動かしても即座には反映されない（実効値は自動が計算した値を使うため）。\n" +
+             "ラベルには自動が計算した実効値を併記する（UpdateToneLabels参照）")]
+    [SerializeField] private Button           toneAutoButton;
+    [SerializeField] private TextMeshProUGUI  toneAutoText;
+    [Tooltip("自動OFFのときだけ効く手動のレベル補正＋ガンマ。\n" +
+             "min/maxはAdminUIBuilder.ToneSliders（CameraToneControllerの[Range]と一致）が唯一の設定元")]
+    [SerializeField] private Slider           toneBlackSlider;
+    [SerializeField] private TextMeshProUGUI  toneBlackText;
+    [SerializeField] private Slider           toneWhiteSlider;
+    [SerializeField] private TextMeshProUGUI  toneWhiteText;
+    [SerializeField] private Slider           toneGammaSlider;
+    [SerializeField] private TextMeshProUGUI  toneGammaText;
 
     [Header("基本タブのトグル")]
     [SerializeField] private Button           imgEnableButton;
@@ -261,6 +283,7 @@ public class AdminUIManager : MonoBehaviour
     private SpaceModeController _spaceMode;
     private ExperienceDirector  _experience;
     private DopamineModeController _dopamine;
+    private CameraToneController   _tone;
     private GestureDetector     _gesture;
     private CameraCircleMatte   _matte;
     private PoseLandmarkDetector _poseDetector;
@@ -272,7 +295,7 @@ public class AdminUIManager : MonoBehaviour
     // ── タブ ──
     // 宇宙モードのマスターと違い、この値自体は「効き目」を持たない純粋なUI表示切替なので
     // 永続化しない（次回起動時は「基本」から始まってよい）
-    private enum AdminTab { Basic, Space, Tune, Shell, Experience, Dopamine }
+    private enum AdminTab { Basic, Space, Tune, Shell, Experience, Dopamine, Tone }
     private AdminTab _activeTab = AdminTab.Basic;
 
     // 終了ボタンの2段階確認。行ごとの確認待ちを持つ削除ボタンと違い
@@ -403,6 +426,15 @@ public class AdminUIManager : MonoBehaviour
         _dopamine.OnChanged += OnDopamineChanged;
         UpdateDopamineLabels();
 
+        // 明るさ補正（白飛び対策）。宇宙モード・体験演出・ドーパミンと同じ
+        // GetOrCreate() の作法。OnChanged を購読する理由も同じ
+        // （Inspector から触られた場合や、将来の別経路にもラベルが追従するため）
+        _tone = CameraToneController.GetOrCreate();
+        toneButton     ?.onClick.AddListener(OnToneClicked);
+        toneAutoButton ?.onClick.AddListener(OnToneAutoClicked);
+        _tone.OnChanged += OnToneChanged;
+        UpdateToneLabels();
+
         // 設定パネル（ジェスチャー感度・花火の出し方）も FireworkManager に依存しないので、
         // 同じ理由で早期 return より先に配線する。
         // GestureDetector はシーンに1つある前提で自動解決する（AdminPanel の外にあるため
@@ -453,6 +485,7 @@ public class AdminUIManager : MonoBehaviour
         tabShellButton      ?.onClick.AddListener(() => SwitchTab(AdminTab.Shell));
         tabExperienceButton ?.onClick.AddListener(() => SwitchTab(AdminTab.Experience));
         tabDopamineButton   ?.onClick.AddListener(() => SwitchTab(AdminTab.Dopamine));
+        tabToneButton       ?.onClick.AddListener(() => SwitchTab(AdminTab.Tone));
 
         // 「花火の型」タブの中身。並ぶボタンは型そのものなので、
         // 一覧が実行時にしか分からない（Asset を差し替えれば変わる）。
@@ -635,6 +668,7 @@ public class AdminUIManager : MonoBehaviour
         HealStuckButtons();
         SyncCameraIndexLabel();
         ApplyPendingDetectorSettings();
+        RefreshToneHelpIfActive();
 
         if (!toggleWithF1) return;
 
@@ -645,6 +679,20 @@ public class AdminUIManager : MonoBehaviour
 
         if (keyboard.f1Key.wasPressedThisFrame)
             ToggleVisible();
+    }
+
+    // 白飛び率・平均輝度は刻々変わるが、毎フレーム TextMeshProUGUI.text を書くと
+    // メッシュ再構築が無駄に走る。明るさ補正タブを開いている間だけ4Hzで間引いて更新する
+    private float _lastToneHelpRefresh = float.NegativeInfinity;
+    private const float ToneHelpRefreshInterval = 0.25f;   // 4Hz
+
+    private void RefreshToneHelpIfActive()
+    {
+        if (_activeTab != AdminTab.Tone) return;
+        if (Time.time - _lastToneHelpRefresh < ToneHelpRefreshInterval) return;
+
+        _lastToneHelpRefresh = Time.time;
+        ApplyTabHelpText();
     }
 
     // 処理中はボタンを無効化しているが、コールバックが届かないまま
@@ -679,6 +727,10 @@ public class AdminUIManager : MonoBehaviour
         // 解除しないとシーンを跨いだときに破棄済みの this を呼びに来る
         if (_dopamine != null)
             _dopamine.OnChanged -= OnDopamineChanged;
+
+        // CameraToneController も同じ理由（DontDestroyOnLoad）で解除が要る
+        if (_tone != null)
+            _tone.OnChanged -= OnToneChanged;
     }
 
     // ── 表示 / 非表示 ──
@@ -1465,6 +1517,91 @@ public class AdminUIManager : MonoBehaviour
             : "ジャンプの高さ  ―";
     }
 
+    // ── 明るさ補正（白飛び対策）──
+    // 会場の照明が明るいとカメラ映像が白飛びし、検出（MediaPipe）が人を取れなくなる。
+    // 検出に渡す画像だけにレベル補正＋ガンマを掛ける。表示（背景Quad）には掛けない。
+    private void OnToneClicked()
+    {
+        if (_tone == null) return;
+        _tone.ToggleToneEnabled();
+        UpdateToneLabel();
+
+        Debug.Log($"[AdminUI] 明るさ補正: {(_tone.ToneEnabled ? "ON" : "OFF")}");
+    }
+
+    private void UpdateToneLabel() =>
+        ApplyToggleVisual(toneButton, toneText, "明るさ補正",
+                          _tone != null && _tone.ToneEnabled);
+
+    // 自動ONの間、黒レベル/白レベルのスライダーを動かしても実効値には即座に反映されない
+    // （自動が計算した値を使うため）。ラベル側の実効値併記でそれを見せる（下のスライダーラベル参照）
+    private void OnToneAutoClicked()
+    {
+        if (_tone == null) return;
+        _tone.ToggleAutoLevels();
+        UpdateToneAutoLabel();
+        UpdateToneSliderLabels();
+    }
+
+    private void UpdateToneAutoLabel() =>
+        ApplyToggleVisual(toneAutoButton, toneAutoText, "自動",
+                          _tone != null && _tone.AutoLevelsEnabled);
+
+    // 明るさ補正の状態が変わったときの1か所。Admin のボタン経由でも、
+    // Inspector など別経路でも、必ずここを通る（ドーパミンの OnDopamineChanged と同じ作法）。
+    // ⚠️ スライダーの「位置」はここで戻さない（ラベルだけを読み直す。理由は OnDopamineChanged 参照）
+    private void OnToneChanged()
+    {
+        UpdateToneLabels();
+        ApplyTabHelpText();
+    }
+
+    private void UpdateToneLabels()
+    {
+        UpdateToneLabel();
+        UpdateToneAutoLabel();
+        UpdateToneSliderLabels();
+    }
+
+    private void UpdateToneSliderLabels()
+    {
+        UpdateToneBlackLabel();
+        UpdateToneWhiteLabel();
+        UpdateToneGammaLabel();
+    }
+
+    // 自動ON中は「動かしても即座には効かない」ので、実効値（自動が計算した値）を併記する。
+    // 片方だけ出すと「動かしても効かない」（実効値だけ）か「表示と挙動が違う」（保存値だけ）の
+    // 誤解が必ず起きる（ドーパミン中の「検出の調整」タブの併記と同じ理由）
+    private void UpdateToneBlackLabel()
+    {
+        if (toneBlackText == null) return;
+        if (_tone == null) { toneBlackText.text = "黒レベル  ―"; return; }
+
+        string text = $"黒レベル  {_tone.BlackLevel:F2}";
+        if (_tone.LevelsOverridden) text += $"（自動 {_tone.AutoBlack:F2}）";
+        toneBlackText.text = text;
+    }
+
+    private void UpdateToneWhiteLabel()
+    {
+        if (toneWhiteText == null) return;
+        if (_tone == null) { toneWhiteText.text = "白レベル  ―"; return; }
+
+        string text = $"白レベル  {_tone.WhiteLevel:F2}";
+        if (_tone.LevelsOverridden) text += $"（自動 {_tone.AutoWhite:F2}）";
+        toneWhiteText.text = text;
+    }
+
+    // ガンマは自動の対象外（自動は黒/白レベルの「範囲」だけを決める）なので実効値の併記は無い
+    private void UpdateToneGammaLabel()
+    {
+        if (toneGammaText == null) return;
+        toneGammaText.text = _tone != null
+            ? $"ガンマ  {_tone.Gamma:F2}"
+            : "ガンマ  ―";
+    }
+
     // 花火をその人の位置から打つか（ON）、常に画面中央から打つか（OFF）。
     // FireworkLauncher.LaunchAtScreenCenter を裏返した値がこのボタンの ON/OFF になる
     private void OnPersonPosClicked()
@@ -1518,6 +1655,7 @@ public class AdminUIManager : MonoBehaviour
         if (tabShellPage      != null) tabShellPage     .gameObject.SetActive(tab == AdminTab.Shell);
         if (tabExperiencePage != null) tabExperiencePage.gameObject.SetActive(tab == AdminTab.Experience);
         if (tabDopaminePage   != null) tabDopaminePage  .gameObject.SetActive(tab == AdminTab.Dopamine);
+        if (tabTonePage       != null) tabTonePage      .gameObject.SetActive(tab == AdminTab.Tone);
 
         ApplyTabVisual(tabBasicButton,      tabBasicText,      tab == AdminTab.Basic);
         ApplyTabVisual(tabSpaceButton,      tabSpaceText,      tab == AdminTab.Space);
@@ -1525,6 +1663,7 @@ public class AdminUIManager : MonoBehaviour
         ApplyTabVisual(tabShellButton,      tabShellText,      tab == AdminTab.Shell);
         ApplyTabVisual(tabExperienceButton, tabExperienceText, tab == AdminTab.Experience);
         ApplyTabVisual(tabDopamineButton,   tabDopamineText,   tab == AdminTab.Dopamine);
+        ApplyTabVisual(tabToneButton,       tabToneText,       tab == AdminTab.Tone);
 
         ApplyTabHelpText();
 
@@ -1535,6 +1674,7 @@ public class AdminUIManager : MonoBehaviour
         //      スライダーの位置は正しいのにラベルの数字だけ古い、という状態になっていた。
         //      「開いたときに読み直す」が入っていれば、値がどこから変わっても表示が合う
         if (tab == AdminTab.Tune) UpdateTuneLabels();
+        if (tab == AdminTab.Tone) UpdateToneLabels();
     }
 
     // タブごとの1行ヘルプ。SwitchTab から切り出してあるのは、
@@ -1552,10 +1692,27 @@ public class AdminUIManager : MonoBehaviour
             AdminTab.Experience => "体験演出ONでコンボ・いっしょにが有効。個別スイッチはOFF中も保存されます",
             AdminTab.Dopamine   => "ドーパミンONで虹色の花火・大当たり音・ゆるい検出になります。" +
                                    "個別スイッチはOFF中も保存されます（マスターだけは毎起動OFFから）",
+            AdminTab.Tone       => ToneHelpText(),
             _                   => "テスト打上=花火を1発試す ／ 丸窓=映像をドーム型に切り抜く表示 ／ " +
                                    "左右反転=映像を鏡像にする（骨格・花火も一緒に反転）／ " +
                                    "花火ごとの細かさは下の一覧の［細かさ］から",
         };
+    }
+
+    // 白飛び率・平均輝度を常時出す。完全に255へ張り付いた画素はどんな式を通しても
+    // 情報が戻らないので、高いときは「打つ手はカメラ側」であることを明示する
+    // （ソフトの補正だけでは解決しないケースがあることを画面から読めるようにする）
+    private const float ToneClipWarnRatio = 0.30f;
+
+    private string ToneHelpText()
+    {
+        if (_tone == null) return "明るさ補正: CameraToneController が見つかりません";
+
+        string warn = _tone.ClipRatio >= ToneClipWarnRatio
+            ? $" ─ {ToneClipWarnRatio * 100f:F0}%を超えるときはカメラ側の露出を下げてください"
+            : "";
+
+        return $"白飛び {_tone.ClipRatio * 100f:F0}% ／ 平均の明るさ {_tone.MeanLuma:F2}{warn}";
     }
 
     // ドーパミン中はこのタブの値が読まれない。ラベルの併記だけだと
@@ -1739,11 +1896,26 @@ public class AdminUIManager : MonoBehaviour
                        v => { _dopamine.RelaxJumpRiseThreshold = v; UpdateDopaJumpLabel();     });
         }
 
+        // ── 明るさ補正（白飛び対策）──
+        //   setter は LUT を焼き直すだけの軽い処理（PoseLandmarker の作り直しは無い）ので、
+        //   PersonConf/MaxPeopleのような遅延適用（PendingValue）は不要。ドラッグ中の
+        //   毎フレーム onValueChanged がそのまま即時反映されてよい
+        if (_tone != null)
+        {
+            InitSlider(toneBlackSlider, _tone.BlackLevel,
+                       v => { _tone.BlackLevel = v; UpdateToneBlackLabel(); });
+            InitSlider(toneWhiteSlider, _tone.WhiteLevel,
+                       v => { _tone.WhiteLevel = v; UpdateToneWhiteLabel(); });
+            InitSlider(toneGammaSlider, _tone.Gamma,
+                       v => { _tone.Gamma = v;      UpdateToneGammaLabel(); });
+        }
+
         UpdateTuneLabels();
         UpdateImgChanceLabel();
         UpdatePersonConfLabel();
         UpdateMaxPeopleLabel();
         UpdateDopamineSliderLabels();
+        UpdateToneSliderLabels();
     }
 
     private static void InitSlider(Slider slider, float initialValue, UnityEngine.Events.UnityAction<float> onChanged)

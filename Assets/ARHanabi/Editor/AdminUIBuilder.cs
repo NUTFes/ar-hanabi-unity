@@ -23,7 +23,7 @@ using UnityEngine.UI;
 //   ┌─────────────────────────────────────────────────────────┐
 //   │ Header      花火管理                          [終了][閉じる] │
 //   ├─────────────────────────────────────────────────────────┤
-//   │ TabBar  [基本][宇宙モード][検出の調整][花火の型][体験][ドーパミン] 全12件/有効8件 │
+//   │ TabBar  [基本][宇宙モード][検出の調整][花火の型][体験][ドーパミン][明るさ補正] 全12件/有効8件 │
 //   ├─────────────────────────────────────────────────────────┤
 //   │ TabContent  TabBasicPage / TabSpacePage / TabTunePage の   │
 //   │             どれか1つだけを SetActive(true) して見せる         │
@@ -104,10 +104,12 @@ public static class AdminUIBuilder
     private const float TuneGridSpacing   = 12f;
     private const float PageContentWidth  = 1860f;
 
-    // 「検出の調整」タブは3列、「ドーパミン」タブのスライダーは4列。
-    // 列数はページごとに違うので定数で持ち、BuildSliderGridPage へ渡す
+    // 「検出の調整」タブは3列、「ドーパミン」タブのスライダーは4列、
+    // 「明るさ補正」タブは3列。列数はページごとに違うので定数で持ち、
+    // BuildSliderGridPage へ渡す
     private const int   TuneColumns       = 3;
     private const int   DopamineColumns   = 4;
+    private const int   ToneColumns       = 3;
 
     // 列数からセル幅を出す。列間は (columns - 1) 本
     private static float SliderCellWidth(int columns) =>
@@ -130,9 +132,11 @@ public static class AdminUIBuilder
         "TabShellButton",
         "TabExperienceButton",
         // 6枚目。ドーパミンモード（虹色・大当たり音・検出ゆるめ）のマスターと個別スイッチ。
-        // タブが1枚増えても右端の件数表示（EntryCountText）が潰れないことは確認済み
-        //（見積もりは BuildTabBar のコメント参照）
         "TabDopamineButton",
+        // 7枚目。白飛び対策の明るさ補正（自動レベル・黒/白レベル・ガンマ）。
+        // 7枚に増やしても右端の件数表示（EntryCountText）が潰れないことは確認済み
+        //（見積もりは BuildTabBar のコメント参照。7枚に増やす際に計算し直した）
+        "TabToneButton",
     };
 
     // 「基本」タブ（横1行）。当日いちばん触るものだけを置く。
@@ -192,6 +196,17 @@ public static class AdminUIBuilder
         "DopamineRainbowButton",
         "DopamineSfxButton",
         "DopamineDetectButton",
+    };
+
+    // 「明るさ補正」タブのボタン行（横1行）。ドーパミンタブと同じ複合ページ
+    // （ボタン行＋スライダー格子）を使うが、こちらは「マスター＋個別」ではなく
+    // 「補正するか／自動で決めるか」の2択が並ぶだけ。会場の照明という
+    // 「その会場の条件」を扱うので、ドーパミンのように毎起動 OFF から始めたりはしない
+    //（CameraToneController.Awake 参照）
+    private static readonly string[] TabToneButtonOrder =
+    {
+        "ToneButton",
+        "ToneAutoButton",
     };
 
     // 「検出の調整」タブに並べるスライダー。3列×2行のグリッドにこの順で入る。
@@ -256,6 +271,22 @@ public static class AdminUIBuilder
         new SliderSpec("DopaJump",     "ジャンプの高さ  0.12（肩幅比）",   0.05f, 1f, false),
     };
 
+    // 「明るさ補正」タブに並べるスライダー。3列×1行のグリッドにこの順で入る。
+    //
+    // min/max は CameraToneController の [Range] と一致させてある。
+    // 片方だけ広げると、スライダーでは入るのに setter 側で丸められて
+    // 「動かしたのに戻る」という挙動になる（ドーパミンタブの注意と同じ）。
+    //
+    // 自動レベル ON の間、ToneBlack/ToneWhite は「操作しても即座には効かない」
+    // （実効値は自動が計算した値を使うため）。Manager 側がラベルに実効値を
+    // 併記するので、無効化はしない（仕込んでおいた値は自動 OFF の瞬間そのまま効く）
+    private static readonly SliderSpec[] ToneSliders =
+    {
+        new SliderSpec("ToneBlack", "黒レベル  0.00",  0f,    0.60f, false),
+        new SliderSpec("ToneWhite", "白レベル  1.00",  0.40f, 1.00f, false),
+        new SliderSpec("ToneGamma", "ガンマ  1.00",    0.40f, 2.50f, false),
+    };
+
     // タブごとの1行ヘルプ。TabHelpText の初期値に使う。
     // 実行中の切り替えは AdminUIManager が行うので、同じ文言を向こうにも持っている
     // （文言を直すときは admin-ui-contract.md の表と両方を揃えること）
@@ -303,6 +334,10 @@ public static class AdminUIBuilder
         { "DopamineSfxButton",     "大当たり音 [ON]" },
         { "DopamineDetectButton",  "検出をゆるめる [ON]" },
 
+        // 明るさ補正タブ（白飛び対策）
+        { "ToneButton",     "明るさ補正 [ON]" },
+        { "ToneAutoButton", "自動 [ON]" },
+
         // タブ行・ヘッダー・パネル外
         { "TabBasicButton",      "基本" },
         { "TabSpaceButton",      "宇宙モード" },
@@ -310,6 +345,7 @@ public static class AdminUIBuilder
         { "TabShellButton",      "花火の型" },
         { "TabExperienceButton", "体験" },
         { "TabDopamineButton",   "ドーパミン" },
+        { "TabToneButton",       "明るさ補正" },
         { "QuitButton",          "終了" },
         { "CloseButton",         "閉じる" },
         { "OpenTabButton",       "開く" },
@@ -608,14 +644,15 @@ public static class AdminUIBuilder
 
         SetHeight(tabBar, AdminUiStyle.TabBarHeight);
 
-        // ── タブが6枚になっても件数表示が潰れないこと ──
+        // ── タブが7枚になっても件数表示が潰れないこと ──
         //   タブは flexible: false ＋ preferredWidth 未設定なので、幅は
         //   max(ToolbarBtnMinW=160, ラベルの preferredWidth) で決まる。
         //   いちばん長い「検出の調整」でも 5文字 × 32pt + 左右padding 16 ≒ 176px。
-        //   6枚すべてを 176px と見積もっても 176*6 + 列間 12*6 = 1128px で、
-        //   パネル有効幅 1872px に対し 744px が件数表示に残る。
-        //   「全12件 / 有効8件」は 20pt で 300px 程度なので、2倍以上の余裕がある。
-        //   ⚠️ タブを7枚以上に増やすときは、この見積もりを計算し直すこと
+        //   7枚すべてを 176px と見積もっても 176*7 + 列間 12*6 = 1304px で、
+        //   パネル有効幅 1872px に対し 568px が件数表示に残る。
+        //   「全12件 / 有効8件」は 20pt で 300px 程度なので、約1.9倍の余裕がある
+        //  （「明るさ補正」タブ追加時に6枚から計算し直した）。
+        //   ⚠️ タブを8枚以上に増やすときは、この見積もりを計算し直すこと
         for (int i = 0; i < TabBarButtonOrder.Length; i++)
         {
             var btn = FindOrCreateButton(panel, tabBar, TabBarButtonOrder[i], log);
@@ -671,6 +708,7 @@ public static class AdminUIBuilder
         var shellPage      = FindOrCreateChild(tabContent, "TabShellPage",      log);
         var experiencePage = FindOrCreateChild(tabContent, "TabExperiencePage", log);
         var dopaminePage   = FindOrCreateChild(tabContent, "TabDopaminePage",   log);
+        var tonePage       = FindOrCreateChild(tabContent, "TabTonePage",       log);
 
         basicPage     .SetSiblingIndex(0);
         spacePage     .SetSiblingIndex(1);
@@ -678,6 +716,7 @@ public static class AdminUIBuilder
         shellPage     .SetSiblingIndex(3);
         experiencePage.SetSiblingIndex(4);
         dopaminePage  .SetSiblingIndex(5);
+        tonePage      .SetSiblingIndex(6);
 
         BuildButtonRow(panel, basicPage,      TabBasicButtonOrder,      log);
         BuildButtonRow(panel, spacePage,      TabSpaceButtonOrder,      log);
@@ -685,6 +724,7 @@ public static class AdminUIBuilder
         BuildShellPage(shellPage, log);
         BuildButtonRow(panel, experiencePage, TabExperienceButtonOrder, log);
         BuildDopaminePage(panel, dopaminePage, log);
+        BuildTonePage(panel, tonePage, log);
 
         // Editor で開いたときに何も見えないと壊れて見えるので、
         // 既定で「基本」タブを開いた状態にしておく。
@@ -695,6 +735,7 @@ public static class AdminUIBuilder
         SetActive(shellPage,      false);
         SetActive(experiencePage, false);
         SetActive(dopaminePage,   false);
+        SetActive(tonePage,       false);
     }
 
     // 「花火の型」ページ。器（グリッド）だけを作る。
@@ -809,17 +850,26 @@ public static class AdminUIBuilder
         log.AppendLine($"  {page.name} に {specs.Length} 個のスライダーを配置（{columns}列 {rows}行）");
     }
 
-    // 「ドーパミン」ページ。ボタン行とスライダーグリッドを縦に並べる。
+    // 「ボタン行＋スライダー格子」の複合ページの器。ドーパミン・明るさ補正で共通。
     //
     // ── なぜページ自身が TabContent と同じ形（縦積み）なのか ──
     //   他のページは「ボタン1行だけ」か「スライダーの格子だけ」で、器が1つで足りていた。
-    //   ドーパミンだけは両方を載せるが、HorizontalLayoutGroup と GridLayoutGroup を
+    //   この2つだけは両方を載せるが、HorizontalLayoutGroup と GridLayoutGroup を
     //   1つの GameObject に同居させることはできない（互いに子のアンカーを奪い合う。
     //   BottomRow で一度やらかしている）。
     //   そこでページ自身は縦に積むだけの器にして、中身は既存の
     //   BuildButtonRow / BuildSliderGridPage をそのまま子へ適用する。
     //   これは TabContent が複数のページを縦に持つのと同じ形で、新しい考え方ではない。
-    private static void BuildDopaminePage(Transform panel, Transform page, StringBuilder log)
+    //
+    // ── なぜ「ドーパミン専用」のままにしなかったか ──
+    //   明るさ補正タブを足すときに専用のまま複製すると、この複合ページの組み立てが
+    //   もう1か所に増え、片方だけ直して直し忘れる事故が必ず起きる
+    //  （ドーパミンタブ追加時に BuildSliderGridPage を一般化したのと同じ判断）。
+    //   受け取るのは「行の名前」「格子の名前」「並べるもの」だけで、組み立て自体は1つに保つ。
+    private static void BuildRowAndGridPage(Transform panel, Transform page,
+                                            string rowChildName, string gridChildName,
+                                            string[] buttonOrder, SliderSpec[] sliderSpecs, int columns,
+                                            StringBuilder log)
     {
         // 以前このページが単独のボタン行／グリッドだった場合に残る器を落とす。
         // ページ自身は縦積みしかしないので、横並び・格子はどちらも邪魔になる
@@ -843,16 +893,26 @@ public static class AdminUIBuilder
         // （TabContent 自身がこれと同じ形・同じ理由で高さを持たない）
         ClearFixedHeight(page);
 
-        var buttonRow  = FindOrCreateChild(page, "DopamineButtonRow",  log);
-        var sliderGrid = FindOrCreateChild(page, "DopamineSliderGrid", log);
+        var buttonRow  = FindOrCreateChild(page, rowChildName,  log);
+        var sliderGrid = FindOrCreateChild(page, gridChildName, log);
         buttonRow .SetSiblingIndex(0);
         sliderGrid.SetSiblingIndex(1);
 
-        // マスターを含むボタン行が上。数値は「ONにしたときにどう振る舞うか」の
-        // 調整なので、どちらが先に目に入るべきかで並び順を決めている
-        BuildButtonRow(panel, buttonRow, TabDopamineButtonOrder, log);
-        BuildSliderGridPage(sliderGrid, DopamineSliders, DopamineColumns, log);
+        // マスター（または ON/OFF）を含むボタン行が上。数値は「ONにしたときにどう
+        // 振る舞うか」の調整なので、どちらが先に目に入るべきかで並び順を決めている
+        BuildButtonRow(panel, buttonRow, buttonOrder, log);
+        BuildSliderGridPage(sliderGrid, sliderSpecs, columns, log);
     }
+
+    // 「ドーパミン」ページ。BuildRowAndGridPage への1行呼び出し
+    private static void BuildDopaminePage(Transform panel, Transform page, StringBuilder log) =>
+        BuildRowAndGridPage(panel, page, "DopamineButtonRow", "DopamineSliderGrid",
+                            TabDopamineButtonOrder, DopamineSliders, DopamineColumns, log);
+
+    // 「明るさ補正」ページ。ドーパミンページと全く同じ形（ボタン行＋スライダー格子）
+    private static void BuildTonePage(Transform panel, Transform page, StringBuilder log) =>
+        BuildRowAndGridPage(panel, page, "ToneButtonRow", "ToneSliderGrid",
+                            TabToneButtonOrder, ToneSliders, ToneColumns, log);
 
     // スライダー1個ぶんのブロックを組む。
     //
@@ -1383,6 +1443,7 @@ public static class AdminUIBuilder
         AssignButton(so, panel, "TabShellButton",      "tabShellButton",      "tabShellText",      log);
         AssignButton(so, panel, "TabExperienceButton", "tabExperienceButton", "tabExperienceText", log);
         AssignButton(so, panel, "TabDopamineButton",   "tabDopamineButton",   "tabDopamineText",   log);
+        AssignButton(so, panel, "TabToneButton",       "tabToneButton",       "tabToneText",       log);
         Assign(so, "entryCountText", FindComponent<TextMeshProUGUI>(panel, "EntryCountText"), log);
 
         // ページそのもの（Manager が SetActive で1つだけ見せる）
@@ -1392,6 +1453,7 @@ public static class AdminUIBuilder
         Assign(so, "tabShellPage",      FindDescendant(panel, "TabShellPage"),      log);
         Assign(so, "tabExperiencePage", FindDescendant(panel, "TabExperiencePage"), log);
         Assign(so, "tabDopaminePage",    FindDescendant(panel, "TabDopaminePage"),    log);
+        Assign(so, "tabTonePage",        FindDescendant(panel, "TabTonePage"),        log);
 
         Assign(so, "tabHelpText", FindComponent<TextMeshProUGUI>(panel, "TabHelpText"), log);
         Assign(so, "statusText",  FindComponent<TextMeshProUGUI>(panel, "StatusText"),  log);
@@ -1425,6 +1487,10 @@ public static class AdminUIBuilder
         AssignButton(so, panel, "DopamineSfxButton",     "dopamineSfxButton",     "dopamineSfxText",     log);
         AssignButton(so, panel, "DopamineDetectButton",  "dopamineDetectButton",  "dopamineDetectText",  log);
 
+        // ── 明るさ補正タブ（白飛び対策）──
+        AssignButton(so, panel, "ToneButton",     "toneButton",     "toneText",     log);
+        AssignButton(so, panel, "ToneAutoButton", "toneAutoButton", "toneAutoText", log);
+
         // ── 検出の調整タブ ──
         // GameObject 名（HandUpSlider / HandUpLabel）と フィールド名（handUpSlider /
         // handUpText）は先頭1文字の大小しか違わないので、TuneSliders から機械的に導く。
@@ -1436,6 +1502,9 @@ public static class AdminUIBuilder
         // 名前の導き方は上と全く同じ（HueSpeedSlider → hueSpeedSlider）なので、
         // 同じ関数へ表を渡すだけで済む
         AssignSliders(so, panel, DopamineSliders, log);
+
+        // ── 明るさ補正タブのスライダー ──
+        AssignSliders(so, panel, ToneSliders, log);
 
         // 行の親は Viewport > Content。
         // ⚠️ 名前が "Content" ちょうどの子孫を深さ優先で拾うので、他所に "Content" を
