@@ -189,6 +189,9 @@ public class AdminUIManager : MonoBehaviour
     [SerializeField] private TextMeshProUGUI  toneWhiteText;
     [SerializeField] private Slider           toneGammaSlider;
     [SerializeField] private TextMeshProUGUI  toneGammaText;
+    [Tooltip("補正ON/OFF・自動ON/OFF・黒/白レベル・ガンマをすべて既定値へ戻す。\n" +
+             "保存値もその場で書き換わるので、次回起動を待たずに今すぐ効く")]
+    [SerializeField] private Button           toneResetButton;
 
     [Header("基本タブのトグル")]
     [SerializeField] private Button           imgEnableButton;
@@ -430,8 +433,9 @@ public class AdminUIManager : MonoBehaviour
         // GetOrCreate() の作法。OnChanged を購読する理由も同じ
         // （Inspector から触られた場合や、将来の別経路にもラベルが追従するため）
         _tone = CameraToneController.GetOrCreate();
-        toneButton     ?.onClick.AddListener(OnToneClicked);
-        toneAutoButton ?.onClick.AddListener(OnToneAutoClicked);
+        toneButton      ?.onClick.AddListener(OnToneClicked);
+        toneAutoButton  ?.onClick.AddListener(OnToneAutoClicked);
+        toneResetButton ?.onClick.AddListener(OnToneResetClicked);
         _tone.OnChanged += OnToneChanged;
         UpdateToneLabels();
 
@@ -1606,6 +1610,24 @@ public class AdminUIManager : MonoBehaviour
         toneGammaText.text = _tone != null
             ? $"ガンマ  {_tone.Gamma:F2}"
             : "ガンマ  ―";
+    }
+
+    // 明るさ補正を既定値へ戻す。ON/OFF・自動・黒/白/ガンマの5つをまとめて戻す単発の操作。
+    // ラベルは ResetToDefault() 内の Changed() → OnToneChanged 経由で更新されるが、
+    // スライダーの「位置」は OnChanged 経由では戻さない方針（OnToneChanged のコメント参照。
+    // ドラッグ中の往復を避けるため）なので、ここだけ明示的に位置も合わせる。
+    // ドラッグ中ではない単発のボタン操作なので、位置を書き戻しても往復は起きない
+    private void OnToneResetClicked()
+    {
+        if (_tone == null) return;
+
+        _tone.ResetToDefault();
+
+        toneBlackSlider?.SetValueWithoutNotify(_tone.BlackLevel);
+        toneWhiteSlider?.SetValueWithoutNotify(_tone.WhiteLevel);
+        toneGammaSlider?.SetValueWithoutNotify(_tone.Gamma);
+
+        SetStatus("[OK] 明るさ補正を既定値に戻しました");
     }
 
     // 花火をその人の位置から打つか（ON）、常に画面中央から打つか（OFF）。

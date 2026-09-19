@@ -168,7 +168,12 @@ gridChildName, buttonOrder, sliderSpecs, columns, log)` へ一般化し、
 `BuildDopaminePage`/`BuildTonePage` はその1行呼び出しにした
 （ドーパミンタブ追加時に `BuildSliderGridPage` を一般化したのと同じ機械的リファクタ）。
 
-- ボタン2個: `明るさ補正 [ON/OFF]` / `自動 [ON/OFF]`
+- ボタン3個: `明るさ補正 [ON/OFF]` / `自動 [ON/OFF]` / `デフォルトに戻す`
+  （最後の1個は状態を持たない単発の操作ボタン。`CameraToneController.ResetToDefault()`
+  がON/OFF・自動・黒/白/ガンマの5つをまとめて既定値へ戻し、保存値もその場で書き換える。
+  スライダーの「位置」は他のトグルと違ってこの操作だけ明示的に戻す
+  ―― ドラッグ中の往復を避けるための既存ルールは「OnChangedから戻さない」ことなので、
+  単発ボタンの直後にこちらから戻す分には往復が起きない）
 - スライダー3列: `黒レベル` / `白レベル` / `ガンマ`（min/max は `AdminUIBuilder.ToneSliders`
   が唯一の設定元。`CameraToneController` の `[Range]` と一致させてある）
 - ラベルは自動ON中、保存値と実効値（自動が計算した値）を併記する
@@ -194,7 +199,7 @@ gridChildName, buttonOrder, sliderSpecs, columns, log)` へ一般化し、
 | **新規** `Scripts/Core/CameraToneController.cs` | 設定・永続化・自動計測・LUT |
 | `Scripts/Pose/PoseLandmarkDetector.cs` | `DetectFromCamera` に計測＋適用（順序厳守）、`ARHanabi.Pose.Tone` マーカー |
 | `Scripts/Pose/SelfieSegmentationController.cs` | NHWC構築ループで同じLUTを通す |
-| `Editor/AdminUIBuilder.cs` | 7枚目のタブ、ボタン2・スライダー3、`BuildRowAndGridPage`への一般化、幅見積もりコメント更新 |
+| `Editor/AdminUIBuilder.cs` | 7枚目のタブ、ボタン3（ON/OFF・自動・デフォルトに戻す）・スライダー3、`BuildRowAndGridPage`への一般化、幅見積もりコメント更新 |
 | `Scripts/UI/AdminUIManager.cs` | `AdminTab.Tone`、トグル2・スライダー3、実効値併記、白飛び率の4Hz更新 |
 | `Scenes/MainScene.unity` | 「Admin UI を再構築」の成果物（Unity Editor での実行が必要） |
 
@@ -256,3 +261,6 @@ gridChildName, buttonOrder, sliderSpecs, columns, log)` へ一般化し、
 **管理画面**
 - タブが7枚並んでも右端の件数表示が潰れないこと
 - 自動ONのとき黒/白のラベルに実効値が併記されること。自動OFFで併記が消えること
+- 手動で黒/白/ガンマをずらしたあと「デフォルトに戻す」を押すと、ON/OFF・自動を含めて
+  すべて既定値に戻り、スライダーの位置も追従すること。再起動しても既定値のまま
+  引き継がれること（保存値がその場で書き換わっている証拠）

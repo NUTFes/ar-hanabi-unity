@@ -202,11 +202,14 @@ public static class AdminUIBuilder
     // （ボタン行＋スライダー格子）を使うが、こちらは「マスター＋個別」ではなく
     // 「補正するか／自動で決めるか」の2択が並ぶだけ。会場の照明という
     // 「その会場の条件」を扱うので、ドーパミンのように毎起動 OFF から始めたりはしない
-    //（CameraToneController.Awake 参照）
+    //（CameraToneController.Awake 参照）。
+    // ToneResetButton は状態を持たない単発の操作ボタン（TestLaunchButton/RefreshButton と
+    // 同じ扱い）なので、押しても [ON]/[OFF] のようなラベル書き換えは起きない
     private static readonly string[] TabToneButtonOrder =
     {
         "ToneButton",
         "ToneAutoButton",
+        "ToneResetButton",
     };
 
     // 「検出の調整」タブに並べるスライダー。3列×2行のグリッドにこの順で入る。
@@ -335,8 +338,9 @@ public static class AdminUIBuilder
         { "DopamineDetectButton",  "検出をゆるめる [ON]" },
 
         // 明るさ補正タブ（白飛び対策）
-        { "ToneButton",     "明るさ補正 [ON]" },
-        { "ToneAutoButton", "自動 [ON]" },
+        { "ToneButton",      "明るさ補正 [ON]" },
+        { "ToneAutoButton",  "自動 [ON]" },
+        { "ToneResetButton", "デフォルトに戻す" },
 
         // タブ行・ヘッダー・パネル外
         { "TabBasicButton",      "基本" },
@@ -1488,8 +1492,11 @@ public static class AdminUIBuilder
         AssignButton(so, panel, "DopamineDetectButton",  "dopamineDetectButton",  "dopamineDetectText",  log);
 
         // ── 明るさ補正タブ（白飛び対策）──
-        AssignButton(so, panel, "ToneButton",     "toneButton",     "toneText",     log);
-        AssignButton(so, panel, "ToneAutoButton", "toneAutoButton", "toneAutoText", log);
+        AssignButton(so, panel, "ToneButton",      "toneButton",      "toneText",     log);
+        AssignButton(so, panel, "ToneAutoButton",  "toneAutoButton",  "toneAutoText", log);
+        // ラベルが状態で変わらない単発ボタンなので labelField は渡さない
+        // （RefreshButton/TestLaunchButton と同じ扱い）
+        AssignButton(so, panel, "ToneResetButton", "toneResetButton", null,           log);
 
         // ── 検出の調整タブ ──
         // GameObject 名（HandUpSlider / HandUpLabel）と フィールド名（handUpSlider /

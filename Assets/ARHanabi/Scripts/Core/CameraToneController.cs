@@ -48,30 +48,39 @@ public class CameraToneController : MonoBehaviour
 {
     public static CameraToneController Instance { get; private set; }
 
+    // ── 既定値 ──
+    // フィールドの初期値と ResetToDefault() の両方がここを見るので、
+    // 片方だけ直して既定値がズレる事故が起きない
+    private const bool  DefaultToneEnabled = true;
+    private const bool  DefaultAutoLevels  = true;
+    private const float DefaultBlackLevel  = 0f;
+    private const float DefaultWhiteLevel  = 1f;
+    private const float DefaultGamma       = 1f;
+
     [Header("ON/OFF")]
     [Tooltip("検出に渡す画像にレベル補正＋ガンマを掛ける。OFF のときは画素に一切触れない\n" +
              "（HasCorrection が false になり、呼び出し側はループごとスキップする）")]
-    [SerializeField] private bool toneEnabled = true;
+    [SerializeField] private bool toneEnabled = DefaultToneEnabled;
 
     [Tooltip("黒レベル・白レベルを映像から自動で決める。ON の間、手動のスライダー値\n" +
              "（blackLevel/whiteLevel）には一切書き込まない。OFF にした瞬間、\n" +
              "読む先が手動値へ戻るだけで、値そのものは汚れていない。\n" +
              "ON 中は画面を縦6分割し、白飛びしている場所だけを見つけて補正する\n" +
              "（クラス冒頭コメント参照）")]
-    [SerializeField] private bool autoLevels = true;
+    [SerializeField] private bool autoLevels = DefaultAutoLevels;
 
     [Header("手動レベル補正（自動 OFF のときだけ効く・画面全体に同じ値）")]
     [Tooltip("この値以下を黒に落とす（0..1）。白飛びした映像は画素が高輝度側の\n" +
              "狭い範囲に潰れているので、下端を切って全域へ伸ばすとコントラストが戻る")]
-    [SerializeField, Range(0f, 0.6f)] private float blackLevel = 0f;
+    [SerializeField, Range(0f, 0.6f)] private float blackLevel = DefaultBlackLevel;
 
     [Tooltip("この値以上を白に上げる（0..1）")]
-    [SerializeField, Range(0.4f, 1f)] private float whiteLevel = 1f;
+    [SerializeField, Range(0.4f, 1f)] private float whiteLevel = DefaultWhiteLevel;
 
     [Tooltip("レベル補正後に掛けるガンマ。1 を超えると中間調を落として\n" +
              "高輝度側の分離を広げる（白飛びの補助）。自動レベルの対象外で、\n" +
              "画面全体・全バンド共通で常にこの値をそのまま使う")]
-    [SerializeField, Range(0.4f, 2.5f)] private float gamma = 1f;
+    [SerializeField, Range(0.4f, 2.5f)] private float gamma = DefaultGamma;
 
     // ── 縦方向の自動分割数 ──
     // 増やすほど局所的に効くが、1バンドあたりの標本数が減って自動計算が
@@ -454,6 +463,30 @@ public class CameraToneController : MonoBehaviour
     {
         get => gamma;
         set { gamma = value; SettingsStore.SetFloat(KeyGamma, value); Changed(); }
+    }
+
+    /// <summary>
+    /// すべての保存値を既定値へ戻す（ON/OFF・自動・黒/白/ガンマ）。保存もその場で行うので、
+    /// 次回起動を待たずに今すぐ効く。バンドごとの自動計算値は消さない
+    /// （測定して分かった値であって「設定」ではないので戻す対象ではなく、
+    ///   自動ONならこの直後の Measure でまた正しい値に更新される）
+    /// </summary>
+    public void ResetToDefault()
+    {
+        toneEnabled = DefaultToneEnabled;
+        autoLevels  = DefaultAutoLevels;
+        blackLevel  = DefaultBlackLevel;
+        whiteLevel  = DefaultWhiteLevel;
+        gamma       = DefaultGamma;
+
+        SettingsStore.SetBool(KeyEnabled, toneEnabled);
+        SettingsStore.SetBool(KeyAuto,    autoLevels);
+        SettingsStore.SetFloat(KeyBlack,  blackLevel);
+        SettingsStore.SetFloat(KeyWhite,  whiteLevel);
+        SettingsStore.SetFloat(KeyGamma,  gamma);
+
+        Debug.Log("[Tone] 既定値に戻しました（補正ON・自動ON・黒0.00・白1.00・ガンマ1.00）");
+        Changed();
     }
 
     /// <summary>シーンにあればそれを、無ければ自動生成して返す</summary>
