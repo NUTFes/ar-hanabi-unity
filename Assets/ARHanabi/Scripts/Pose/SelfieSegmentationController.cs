@@ -191,14 +191,35 @@ public class SelfieSegmentationController : MonoBehaviour
 
         // 3. NHWC (1, H, W, 3) のテンソルを使い回しバッファ上に構築
         //    GetPixelData は生データへのビューなのでコピー・確保が発生しない
+        //
+        // 白飛び対策のトーン補正（明るさ補正）。PoseLandmarkDetector と同じ LUT を通す。
+        // 人物マスクの推論も同じ白飛びで劣化するため。ループの外で1回だけ引くのは
+        // Instance の == オーバーロード（ネイティブ呼び出しを含む）を画素ごとに呼びたくないため
+        // （RainbowTint が Launch 時に1回だけ Capture するのと同じ理由）
         var pixels = _inputTexture.GetPixelData<Color24>(0);
         int pixelCount = modelInputWidth * modelInputHeight;
-        for (int i = 0; i < pixelCount; i++)
+        var toneLut = CameraToneController.Instance?.LutOrNull;
+
+        if (toneLut == null)
         {
-            var p = pixels[i];
-            _inputFloats[i * 3 + 0] = p.r / 255f;
-            _inputFloats[i * 3 + 1] = p.g / 255f;
-            _inputFloats[i * 3 + 2] = p.b / 255f;
+            for (int i = 0; i < pixelCount; i++)
+            {
+                var p = pixels[i];
+                _inputFloats[i * 3 + 0] = p.r / 255f;
+                _inputFloats[i * 3 + 1] = p.g / 255f;
+                _inputFloats[i * 3 + 2] = p.b / 255f;
+            }
+        }
+        else
+        {
+            const float Inv255 = 1f / 255f;
+            for (int i = 0; i < pixelCount; i++)
+            {
+                var p = pixels[i];
+                _inputFloats[i * 3 + 0] = toneLut[p.r] * Inv255;
+                _inputFloats[i * 3 + 1] = toneLut[p.g] * Inv255;
+                _inputFloats[i * 3 + 2] = toneLut[p.b] * Inv255;
+            }
         }
 
         var shape = new Unity.InferenceEngine.TensorShape(1, modelInputHeight, modelInputWidth, 3);
