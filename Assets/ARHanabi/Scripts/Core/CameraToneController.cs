@@ -1,4 +1,6 @@
-using System.Diagnostics;
+// System.Diagnostics.Debug と UnityEngine.Debug が衝突するため、
+// 名前空間ごと using せず [Conditional] だけを別名で取り込む（ArLog.cs と同じ作法）
+using ConditionalAttribute = System.Diagnostics.ConditionalAttribute;
 using UnityEngine;
 
 // ===== CameraToneController =====
