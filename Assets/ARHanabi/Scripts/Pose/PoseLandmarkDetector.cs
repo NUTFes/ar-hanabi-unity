@@ -370,8 +370,8 @@ public class PoseLandmarkDetector : MonoBehaviour
             var tone = Tone;
             if (tone != null)
             {
-                tone.Measure(_pixelBuffer, Time.time);
-                tone.Apply(_pixelBuffer);
+                tone.Measure(_pixelBuffer, _webCamTexture.width, _webCamTexture.height, Time.time);
+                tone.Apply(_pixelBuffer, _webCamTexture.width, _webCamTexture.height);
             }
         }
 

@@ -192,33 +192,43 @@ public class SelfieSegmentationController : MonoBehaviour
         // 3. NHWC (1, H, W, 3) のテンソルを使い回しバッファ上に構築
         //    GetPixelData は生データへのビューなのでコピー・確保が発生しない
         //
-        // 白飛び対策のトーン補正（明るさ補正）。PoseLandmarkDetector と同じ LUT を通す。
-        // 人物マスクの推論も同じ白飛びで劣化するため。ループの外で1回だけ引くのは
-        // Instance の == オーバーロード（ネイティブ呼び出しを含む）を画素ごとに呼びたくないため
-        // （RainbowTint が Launch 時に1回だけ Capture するのと同じ理由）
+        // 白飛び対策のトーン補正（明るさ補正）。PoseLandmarkDetector と同じ仕組みを通す。
+        // 人物マスクの推論も同じ白飛びで劣化するため。CameraToneController は縦方向に
+        // バンド分けした自動補正を持つので、行ごとに LUT を取り直す必要がある
+        // （行の外で1回だけ引くと、画面の一部だけの白飛びに対応できない。
+        //   CameraToneController 冒頭コメント参照）。
+        // Instance の null チェックは行の外で1回だけ済ませる（`?.` は素の参照比較なので
+        // 画素ごとに呼んでも実測できる負荷にはならないが、行ごとに留めておく）
         var pixels = _inputTexture.GetPixelData<Color24>(0);
-        int pixelCount = modelInputWidth * modelInputHeight;
-        var toneLut = CameraToneController.Instance?.LutOrNull;
+        var tone   = CameraToneController.Instance;
+        const float Inv255 = 1f / 255f;
 
-        if (toneLut == null)
+        for (int y = 0; y < modelInputHeight; y++)
         {
-            for (int i = 0; i < pixelCount; i++)
+            var lut = tone?.RowLutOrNull(y, modelInputHeight);
+            int rowStart = y * modelInputWidth;
+
+            if (lut == null)
             {
-                var p = pixels[i];
-                _inputFloats[i * 3 + 0] = p.r / 255f;
-                _inputFloats[i * 3 + 1] = p.g / 255f;
-                _inputFloats[i * 3 + 2] = p.b / 255f;
+                for (int x = 0; x < modelInputWidth; x++)
+                {
+                    int i = rowStart + x;
+                    var p = pixels[i];
+                    _inputFloats[i * 3 + 0] = p.r * Inv255;
+                    _inputFloats[i * 3 + 1] = p.g * Inv255;
+                    _inputFloats[i * 3 + 2] = p.b * Inv255;
+                }
             }
-        }
-        else
-        {
-            const float Inv255 = 1f / 255f;
-            for (int i = 0; i < pixelCount; i++)
+            else
             {
-                var p = pixels[i];
-                _inputFloats[i * 3 + 0] = toneLut[p.r] * Inv255;
-                _inputFloats[i * 3 + 1] = toneLut[p.g] * Inv255;
-                _inputFloats[i * 3 + 2] = toneLut[p.b] * Inv255;
+                for (int x = 0; x < modelInputWidth; x++)
+                {
+                    int i = rowStart + x;
+                    var p = pixels[i];
+                    _inputFloats[i * 3 + 0] = lut[p.r] * Inv255;
+                    _inputFloats[i * 3 + 1] = lut[p.g] * Inv255;
+                    _inputFloats[i * 3 + 2] = lut[p.b] * Inv255;
+                }
             }
         }
 

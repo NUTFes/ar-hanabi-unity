@@ -173,7 +173,7 @@ public class AdminUIManager : MonoBehaviour
 
     [Header("明るさ補正（白飛び対策）")]
     [Tooltip("検出に渡す画像だけにレベル補正＋ガンマを掛けるON/OFF。表示（背景Quad）には掛けない。\n" +
-             "OFFのときは画素に一切触れない（CameraToneController.LutOrNull が null を返す）")]
+             "OFFのときは画素に一切触れない（CameraToneController.HasCorrection が false になる）")]
     [SerializeField] private Button           toneButton;
     [SerializeField] private TextMeshProUGUI  toneText;
     [Tooltip("黒レベル・白レベルを映像から自動で決める。ONの間、下の黒レベル/白レベルの\n" +
@@ -1572,14 +1572,17 @@ public class AdminUIManager : MonoBehaviour
 
     // 自動ON中は「動かしても即座には効かない」ので、実効値（自動が計算した値）を併記する。
     // 片方だけ出すと「動かしても効かない」（実効値だけ）か「表示と挙動が違う」（保存値だけ）の
-    // 誤解が必ず起きる（ドーパミン中の「検出の調整」タブの併記と同じ理由）
+    // 誤解が必ず起きる（ドーパミン中の「検出の調整」タブの併記と同じ理由）。
+    //
+    // 自動は画面を縦6分割して分割ごとに別の値を計算するので、単一の数値では表せない。
+    // 最小〜最大の範囲で見せる（両方同じなら単一値のまま表示する）
     private void UpdateToneBlackLabel()
     {
         if (toneBlackText == null) return;
         if (_tone == null) { toneBlackText.text = "黒レベル  ―"; return; }
 
         string text = $"黒レベル  {_tone.BlackLevel:F2}";
-        if (_tone.LevelsOverridden) text += $"（自動 {_tone.AutoBlack:F2}）";
+        if (_tone.LevelsOverridden) text += $"（自動 {FormatAutoRange(_tone.AutoBlackMin, _tone.AutoBlackMax)}）";
         toneBlackText.text = text;
     }
 
@@ -1589,9 +1592,12 @@ public class AdminUIManager : MonoBehaviour
         if (_tone == null) { toneWhiteText.text = "白レベル  ―"; return; }
 
         string text = $"白レベル  {_tone.WhiteLevel:F2}";
-        if (_tone.LevelsOverridden) text += $"（自動 {_tone.AutoWhite:F2}）";
+        if (_tone.LevelsOverridden) text += $"（自動 {FormatAutoRange(_tone.AutoWhiteMin, _tone.AutoWhiteMax)}）";
         toneWhiteText.text = text;
     }
+
+    private static string FormatAutoRange(float min, float max) =>
+        Mathf.Approximately(min, max) ? $"{min:F2}" : $"{min:F2}〜{max:F2}";
 
     // ガンマは自動の対象外（自動は黒/白レベルの「範囲」だけを決める）なので実効値の併記は無い
     private void UpdateToneGammaLabel()
