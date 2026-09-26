@@ -191,14 +191,44 @@ public class SelfieSegmentationController : MonoBehaviour
 
         // 3. NHWC (1, H, W, 3) のテンソルを使い回しバッファ上に構築
         //    GetPixelData は生データへのビューなのでコピー・確保が発生しない
+        //
+        // 白飛び対策のトーン補正（明るさ補正）。人物マスクの推論も同じ白飛びで劣化するため。
+        //
+        // ⚠️ ここでは CameraToneController の「行ごとのバンド補間」ではなく
+        //   UniformLutOrNull（画面全体で1本、位置に依存しない版）を使う。
+        //   このバッファは Graphics.Blit → ReadPixels → GetPixelData を経由しており、
+        //   PoseLandmarkDetector の WebCamTexture.GetPixels32() 直読みと同じ行の向き
+        //   （行0=下端）を保っているかを実機で確認できていない。取り違えると
+        //   「飛んでいる場所と逆側を補正する」という本末転倒な壊れ方をするため、
+        //   確信が持てるまでは位置に依存しない安全な版を使う
+        //  （UniformLutOrNull 側のコメントに詳細）。人物マスクは見た目の切り抜き用途で
+        //   ジェスチャー判定の精度には関わらないので、位置精度を落とす代わりに
+        //   向き違いのリスクを消す判断にしてある。
         var pixels = _inputTexture.GetPixelData<Color24>(0);
+        var tone   = CameraToneController.Instance;
+        var lut    = tone != null ? tone.UniformLutOrNull() : null;
         int pixelCount = modelInputWidth * modelInputHeight;
-        for (int i = 0; i < pixelCount; i++)
+        const float Inv255 = 1f / 255f;
+
+        if (lut == null)
         {
-            var p = pixels[i];
-            _inputFloats[i * 3 + 0] = p.r / 255f;
-            _inputFloats[i * 3 + 1] = p.g / 255f;
-            _inputFloats[i * 3 + 2] = p.b / 255f;
+            for (int i = 0; i < pixelCount; i++)
+            {
+                var p = pixels[i];
+                _inputFloats[i * 3 + 0] = p.r * Inv255;
+                _inputFloats[i * 3 + 1] = p.g * Inv255;
+                _inputFloats[i * 3 + 2] = p.b * Inv255;
+            }
+        }
+        else
+        {
+            for (int i = 0; i < pixelCount; i++)
+            {
+                var p = pixels[i];
+                _inputFloats[i * 3 + 0] = lut[p.r] * Inv255;
+                _inputFloats[i * 3 + 1] = lut[p.g] * Inv255;
+                _inputFloats[i * 3 + 2] = lut[p.b] * Inv255;
+            }
         }
 
         var shape = new Unity.InferenceEngine.TensorShape(1, modelInputHeight, modelInputWidth, 3);
